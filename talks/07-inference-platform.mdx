@@ -241,8 +241,6 @@ SLA Planner 使用复杂的扩缩容算法。在每个调整间隔，SLA Planner
 
 **2. 校正因子计算**
 
-
-
 <Tip>
 校正因子是用生产环境的实际表现去修正理想条件下的 profiling 预测。具体做法是计算 `实际值 / 预期值` 得到校正系数，然后在计算所需副本数时将其带入公式，调整每 GPU 的吞吐量估算，使扩缩容决策更贴近真实情况。
 </Tip>
@@ -336,7 +334,7 @@ flowchart TD
     style H fill:#fff8e1
 ```
 
-##### 在线性能分析
+**在线性能分析**
 
 通过在 Kubernetes 中创建真实的测试部署并测量性能。耗时 2-4 小时，精度最高，支持 vLLM、SGLang、TensorRT-LLM。
 
@@ -373,7 +371,7 @@ spec:
   autoApply: true                  # Profiling 完成后自动部署 DynamoGraphDeployment
 ```
 
-##### 使用 AI Configurator 离线模拟分析
+**使用 AI Configurator 进行离线模拟分析**
 
 使用性能模拟快速估算最优配置，无需运行真实部署。耗时仅 20-30 秒，目前仅支持 TensorRT-LLM。
 
@@ -420,9 +418,9 @@ spec:
 
 Dynamo KV Block Manager (KVBM) 是一个可扩展的运行时组件，用于处理跨异构和分布式环境的推理任务中 KV Block 的内存分配、管理和远程共享。KVBM 的架构分为三层：
 
-- **LLM 推理运行时层**（顶层）：包括推理运行时（TensorRT-LLM、vLLM），通过专用的 connector 模块与 Dynamo KVBM 集成。这些 connector 充当翻译层，将运行时特定的操作和事件映射为 KVBM 的面向 block 的内存接口。这将内存管理与推理运行时解耦，实现后端可移植性和内存分层。
-- **KVBM 逻辑层**（中间层）：封装了核心 KV Block Manager 逻辑，作为管理 block 内存的运行时基底。KVBM adapter 将来自不同运行时的传入请求的表示和数据布局进行标准化，并转发给核心内存管理器。该层实现了表查找、内存分配、block 布局管理、生命周期状态转换，以及 block 复用/驱逐策略。
-- **NIXL 层**（底层）：为所有数据和存储事务提供统一支持。NIXL 支持 P2P GPU 传输、RDMA 和 NVLink 远程内存共享、动态 block 注册和元数据交换，并提供存储后端的插件接口，包括 block 内存（GPU HBM、Host DRAM、Remote DRAM、Local SSD）、本地/远程文件系统、对象存储和云存储。
+- **LLM 推理运行时层**：包括推理运行时（TensorRT-LLM、vLLM），通过专用的 connector 模块与 Dynamo KVBM 集成。这些 connector 充当翻译层，将运行时特定的操作和事件映射为 KVBM 的面向 block 的内存接口。这将内存管理与推理运行时解耦，实现后端可移植性和内存分层。
+- **KVBM 逻辑层**：封装了核心 KV Block Manager 逻辑，作为管理 block 内存的运行时基底。KVBM adapter 将来自不同运行时的传入请求的表示和数据布局进行标准化，并转发给核心内存管理器。该层实现了表查找、内存分配、block 布局管理、生命周期状态转换，以及 block 复用/驱逐策略。
+- **NIXL 层**：为所有数据和存储事务提供统一支持。NIXL 支持 P2P GPU 传输、RDMA 和 NVLink 远程内存共享、动态 block 注册和元数据交换，并提供存储后端的插件接口，包括 block 内存（GPU HBM、Host DRAM、Remote DRAM、Local SSD）、本地/远程文件系统、对象存储和云存储。
 
 <img src="https://chengzw258.oss-cn-beijing.aliyuncs.com/Article/20260224225451860.png"  width="600" />
 
@@ -608,7 +606,7 @@ python -m dynamo.frontend \
 
 ### 1.7 多节点部署
 
-多节点部署允许将计算密集型 LLM 工作负载扩展到多台物理机器上，最大化 GPU 利用率并支持更大的模型。
+当模型参数量超出单个 GPU 甚至单台机器的显存容量时，需要通过多节点部署将模型分布在多个 GPU 或者多个服务器上进行推理。
 
 #### 1.7.1 多节点编排方案
 
@@ -628,7 +626,7 @@ Dynamo 支持两种多节点编排方案：
 
 #### 1.7.2 DynamoGraphDeployment 配置
 
-通过 `multinode` 字段配置多节点部署：
+用户只需在 DynamoGraphDeployment 中通过 `multinode` 字段声明节点数量，Dynamo Operator 会自动将其转换为底层的 LeaderWorkerSet (LWS) / Grove 配置，无需手动管理分布式编排细节：
 
 ```yaml
 apiVersion: nvidia.com/v1alpha1
@@ -822,34 +820,9 @@ EPP 会周期性地从 InferencePool 中的 Pod 抓取 metrics，用于评分决
 
 [KV-Cache Indexer](https://github.com/llm-d/llm-d-kv-cache) 是一个高性能库，用于维护跨多个 vLLM Pod 的 KV-Cache Block 位置的全局近实时视图。其目的是通过提供基于缓存 KV-Blocks 的快速智能评分机制，实现对 vLLM Pod 的智能路由和调度。
 
-Indexer 由 vLLM 流式传输的 KV Event 驱动——当 KV Block 在 vLLM 实例中创建或驱逐时，会发出结构化元数据事件。Indexer 据此追踪每个 Block 所在的节点和存储层（GPU/CPU），为 KV Cache 感知的路由决策提供依据。
+Indexer 由 vLLM 流式传输的 KV Event 驱动 -- 当 KV Block 在 vLLM 实例中创建或驱逐时，会发出结构化元数据事件。Indexer 据此追踪每个 Block 所在的节点和存储层（GPU/CPU），为 KV Cache 感知的路由决策提供依据。
 
-```mermaid
-graph TD
-    subgraph "Inference Scheduler"
-        A[Scheduler]
-
-        subgraph "KV-Cache"
-            B[`kvcache.Indexer`]
-            C[`kvblock.Index`]
-            D[`kvevents.Pool`]
-        end
-    end
-
-    subgraph "vLLM Fleet"
-        E[vLLM Pod 1]
-        F[vLLM Pod 2]
-        G[...]
-    end
-
-    A--"1: Score(prompt, pods)"-->B
-    B--"2: Query Index"-->C
-    B--"3: Return Scores"-->A
-    
-    E--"A: Emit KVEvents"-->D
-    F--"A: Emit KVEvents"-->D
-    D--"B: Update Index"-->C
-```
+![](https://chengzw258.oss-cn-beijing.aliyuncs.com/Article/20260301173248411.png)
 
 ### 2.3 PD 分离
 
@@ -906,6 +879,8 @@ schedulingProfiles:
 P/D 分离的组件关系如下图所示：
 
 <img src="https://chengzw258.oss-cn-beijing.aliyuncs.com/Article/20260104181512983.png"  width="600" />
+
+参考资料：[Disaggregated Prefill/Decode Inference Serving in LLM-D](https://github.com/llm-d/llm-d-inference-scheduler/blob/main/docs/disagg_pd.md)
 
 ### 2.4 vLLM Simulator
 
@@ -1015,11 +990,19 @@ spec:
         highestTierAllowed: 1
     roles:
       - name: prefill
-        replicas: 2
-        # ......
+        replicas: 2       # 2 个 prefill 实例
+        workerReplicas: 1  # 每个实例 1 entry + 1 worker = 2 Pod
+        entryTemplate:
+          # ......
+        workerTemplate:
+          # ......
       - name: decode
-        replicas: 1
-        # ......
+        replicas: 1       # 1 个 decode 实例
+        workerReplicas: 1  # 每个实例 1 entry + 1 worker = 2 Pod
+        entryTemplate:
+          # ......
+        workerTemplate:
+          # ......
 ```
 
 Kthena 中 ModelServing、ServingGroup、Role 和 Pod 的层级关系如下：
@@ -1041,8 +1024,9 @@ ModelServing: sample
 ```
 
 基于上述网络拓扑和 ModelServing 配置，Pod 可能的调度情况如下。这个调度结果体现了 `groupPolicy` 和 `rolePolicy` 的区别：
-- **rolePolicy (Tier 1)**：同一 Role 的所有 Pod 必须在同一个 Tier 1 HyperNode 内，因此 Prefill 的 4 个 Pod 都在 s0，Decode 的 2 个 Pod 都在 s1。
-- **groupPolicy (Tier 2)**：不同 Role 可以分布在不同的 Tier 1 HyperNode，只要都在 Tier 2 范围内，因此 Prefill 在 s0、Decode 在 s1 是允许的。
+
+- `groupPolicy.highestTierAllowed: 2`：整个 ServingGroup 的所有 Pod 可以分布在 s2 内的不同 Tier 1 HyperNode（s0 和 s1）中。
+- `rolePolicy.highestTierAllowed: 1`：同一 Role 的所有 Pod 必须在同一个 Tier 1 HyperNode 内。因此 prefill 的所有 Pod 都在 s0 内，decode 的所有 Pod 都在 s1 内。
 
 ```mermaid
 graph TD
@@ -1078,9 +1062,6 @@ graph TD
     style d0_1 fill:#ffcc80
     style empty fill:#f5f5f5
 ```
-
-- `groupPolicy.highestTierAllowed: 2`：整个 ServingGroup 的所有 Pod 可以分布在 s2 内的不同 Tier 1 HyperNode（s0 和 s1）中。
-- `rolePolicy.highestTierAllowed: 1`：同一 Role 的所有 Pod 必须在同一个 Tier 1 HyperNode 内。因此 prefill 的所有 Pod 都在 s0 内，decode 的所有 Pod 都在 s1 内。
 
 **关键字段说明**：
 
@@ -1408,7 +1389,7 @@ Engine Runtime 让推理引擎专注于推理本身，运行时协调工作由 s
 
 ### 5.2 BaseModel / ClusterBaseModel - 模型定义
 
-`BaseModel` 是 OME 中代表基础 AI 模型（如 Llama、Qwen、Mistral）的 Kubernetes 资源。它告诉 OME 在哪里找到模型、如何下载、以及存储在哪里。当创建 `BaseModel` 资源时，OME 自动处理模型文件的下载、解析模型配置以理解其能力，并使其在集群节点上可用。
+`BaseModel` 是 OME 中代表基础 LLM（如 Llama、Qwen、Mistral）的 Kubernetes 资源。它告诉 OME 在哪里找到模型、如何下载、以及存储在哪里。当创建 `BaseModel` 资源时，OME 自动处理模型文件的下载、解析模型配置以理解其能力，并使其在集群节点上可用。
 
 OME 提供两种模型资源：`BaseModel`（Namespace 级别，团队专用）和 `ClusterBaseModel`（Cluster 级别，组织共享），两者 spec 格式完全相同，仅可见性范围不同。
 
@@ -1773,13 +1754,13 @@ spec:
 
 ### 5.4 InferenceService - 部署编排
 
-`InferenceService` 是 OME 中编排模型服务完整生命周期的核心 Kubernetes 资源。它是一个声明式规范，描述了如何在集群中部署、扩缩容和服务 AI 模型。
+`InferenceService` 是 OME 中编排模型服务完整生命周期的核心 Kubernetes 资源。它是一个声明式规范，描述了如何在集群中部署、扩缩容和服务 LLM。
 
 可以将 `InferenceService` 理解为 AI 工作负载的"部署蓝图"。它将模型（`BaseModel`/`ClusterBaseModel`）、运行时（`ServingRuntime`/`ClusterServingRuntime`）和基础设施配置整合在一起，形成完整的服务方案。
 
 OME 采用组件化架构，`InferenceService` 可由多个专用组件组成：
 
-- **Model**：引用要服务的 AI 模型（`BaseModel`/`ClusterBaseModel`）。
+- **Model**：引用要服务的 LLM（`BaseModel`/`ClusterBaseModel`）。
 - **Runtime**：引用运行时环境（`ServingRuntime`/`ClusterServingRuntime`）。
 - **Engine**：主推理组件，处理推理请求。
 - **Decoder**：可选组件，用于 PD 分离部署（Prefill-Decode 分离）。
@@ -2093,7 +2074,9 @@ KServe 通过 `supportedModelFormats` 实现自动匹配：用户在 `InferenceS
 
 随着 ML 推理系统日益庞大和复杂，往往需要多个模型协作完成一次预测。例如：人脸识别流水线需要先检测图片中的人脸，再提取人脸特征与数据库匹配；NLP 流水线需要先做文档分类，再根据分类结果进行下游的命名实体识别。
 
-> **InferenceGraph 和 Agent 框架对比**：InferenceGraph 是为传统 ML 推理管道设计的（预处理 → 模型推理 → 后处理、模型融合等），它是预定义的静态 DAG。而 LangGraph 等框架是为 LLM Agent 设计的，支持动态决策、循环、工具调用、有状态对话等能力。在 LLM 时代，InferenceGraph 的场景可能比较有限——大多数 LLM 应用直接调用单个推理端点，复杂的编排逻辑放在应用层（LangGraph、CrewAI 等）。InferenceGraph 更适合传统 ML 场景下的多模型串联/并联。
+<Tip>
+**InferenceGraph 和 Agent 框架对比**：InferenceGraph 是为传统 ML 推理管道设计的（预处理 → 模型推理 → 后处理、模型融合等），它是预定义的静态 DAG。而 LangGraph 等框架是为 LLM Agent 设计的，支持动态决策、循环、工具调用、有状态对话等能力。在 LLM 时代，InferenceGraph 的场景可能比较有限——大多数 LLM 应用直接调用单个推理端点，复杂的编排逻辑放在应用层（LangGraph、CrewAI 等）。InferenceGraph 更适合传统 ML 场景下的多模型串联/并联。
+</Tip>
 
 KServe 在构建分布式推理图方面有独特优势：自动扩缩容的图路由器、与 InferenceService 的原生集成、以及用于模型串联的标准推理协议。基于这些能力，KServe 提供了 **InferenceGraph**，让用户以声明式、可扩缩的方式将复杂 ML 推理流水线部署到生产环境。
 
@@ -2400,7 +2383,7 @@ spec:
 各推理平台在多引擎支持、PD 分离、多节点推理、Prefix Cache 智能路由等核心功能上已高度趋同，但各自仍有独到之处：
 
 - **NVIDIA Dynamo**：以 Rust 构建高性能核心，提供 KVBM 多级 KV Cache 管理和 NIXL 高性能数据传输库，并通过 SLA Planner 自动完成性能分析与扩缩容决策。此外 Dynamo 还具备请求迁移、请求取消、优雅关闭、过载拒绝等完善的容错机制。
-- **llm-d**：架构轻量可插拔，通过 EPP 调度器和 KV-Cache Indexer 支持 Prefix Cache 感知路由、LoRA 亲和性路由等策略，并在 Gateway API Inference Extension (GIE) 基础上扩展了 PD 分离和 Precise Prefix Cache 感知路由等能力。
+- **llm-d**：架构轻量可插拔，支持 Prefix Cache 感知路由、LoRA 亲和性路由等策略，并在 Gateway API Inference Extension (GIE) 基础上扩展了 PD 分离和 Precise Prefix Cache 感知路由等能力。
 - **Kthena**：通过 Volcano 实现网络拓扑感知调度，并支持同构、异构、Role 级别的多维度弹性伸缩。
 - **RoleBasedGroup**：支持原地更新（In-place Update），更新镜像时只重启容器而不重建 Pod，避免重新调度和 IP 变化，同时保留本地已加载的模型和 KV Cache。
 - **OME**：通过 BaseModel、ServingRuntime、InferenceService 三层抽象分离关注点，ML 工程师将调优经验编码为可复用的蓝图，平台工程师无需理解底层细节即可部署模型。
