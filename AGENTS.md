@@ -47,8 +47,14 @@
 ## Style preferences
 
 - 中文内容为主
-- Use active voice and second person ("你")
+- Use active voice
+- Second person can appear in prose when natural, but avoid teaching-style phrasing such as “你要”“你该”“先记住”
 - Keep sentences concise
-- Use sentence case for headings
-- Bold for UI elements
+- Prefer a public technical article / blog tone over lecture notes or guided-reading tone
+- Use direct, content-first headings
+- Prefer noun phrases or direct declarative headings over question-style headings
+- Avoid headings or table labels built around “为什么”“这一章”“这里”“下面”“先理解”“记住”“你要”“你该”
+- Avoid meta-commentary about chapter structure; focus on the subject itself rather than “this chapter wants to say...”
+- Avoid rhetorical “why” sentences in body copy; state the conclusion directly
+- When adding internet-sourced material, add direct hyperlinks at first mention or in key tables, not only in a final reading list
 - Code formatting for file names, commands, paths
