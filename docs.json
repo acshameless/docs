@@ -61,7 +61,6 @@
               {
                 "group": "章节笔记",
                 "pages": [
-                  "books/ai-systems-performance-engineering/chapters/preface",
                   "books/ai-systems-performance-engineering/chapters/ch01",
                   "books/ai-systems-performance-engineering/chapters/ch02",
                   "books/ai-systems-performance-engineering/chapters/ch03",
@@ -82,12 +81,6 @@
                   "books/ai-systems-performance-engineering/chapters/ch18",
                   "books/ai-systems-performance-engineering/chapters/ch19",
                   "books/ai-systems-performance-engineering/chapters/ch20"
-                ]
-              },
-              {
-                "group": "附录",
-                "pages": [
-                  "books/ai-systems-performance-engineering/resources"
                 ]
               }
             ]

@@ -10,6 +10,8 @@ title: "第一章：介绍与 AI 系统概览"
 
 作为对比，训练 GPT-4 估计花了约 1 亿美元，训练 Gemini Ultra 估计花了约 1.9 亿美元。在这个规模上，系统效率每提高一点，省下来的就不是小数目。而 DeepSeek 在硬件更受限的条件下，用不到 GPT-4 训练成本 1/10 的预算达到了相近效果，靠的正是硬件、软件和算法的协同设计。
 
+本章先从 DeepSeek 在 H800 约束下的模型与系统优化讲起，包括 MoE 架构、DeepSeek-R1 以及 FlashMLA、DeepGEMM、DeepEP、3FS 等工程创新；再把视角扩展到万亿到百万亿参数模型面临的计算与内存瓶颈，以及 GB200、Vera Rubin 等机架式 AI 超级计算机如何提供系统级支撑；最后通过 FlashAttention、MLA 和低精度量化这些例子，说明大模型性能和成本的上限并不只取决于单个算法或单代 GPU，而取决于硬件、软件和算法能否围绕同一组瓶颈协同演进。
+
 ---
 
 ## 章节详解
@@ -165,140 +167,31 @@ H800 的 NVLink ~400 GB/s 来自原书。H100/H200 的 NVLink 900 GB/s 和 PCIe 
 
 </Accordion>
 
-
-
 #### 1.2 DeepSeek-V3 的 MoE 架构
 
-DeepSeek-V3 是一个约 **671B 参数**的混合专家（Mixture of Experts, MoE）模型，但每个输入 token 仅激活约 **37B 参数**：
-
-- **1 个共享专家** + **8 个路由选中的专家**（从 256 个候选中选出）
-- 每个 token 共使用 **9 个活跃专家**
-- 推理时的计算量仅相当于同等规模 dense 模型的 **~5.5%**
-
+DeepSeek‑V3 是一个约 671B 参数的混合专家（MoE）模型，但每个输入 token 只会激活约 37B 参数：每层包含 1 个共享专家和 256 个路由专家，每个 token 从中选出 8 个路由专家，再加上共享专家，一共使用 9 个活跃专家。这样一来，激活参数量约占总参数的 5.5%，在保持大模型容量的同时显著降低了单 token 的实际计算开销。
 <Tip>
 MoE 架构的核心优势：总参数量决定模型容量（"模型能学到多少知识"），而活跃参数量决定推理成本（"每次推理需要多少计算"）。这种解耦让 MoE 在相同计算预算下能训练出更大、更强的模型。
 </Tip>
 
-#### 1.3 关键工程创新
+#### 1.3 DeepSeek-R1：推理模型
 
-DeepSeek 的工程团队开发了一系列针对 H800 约束的优化技术：
+在 DeepSeek-V3 基础上，团队进一步构建了专门的推理模型 **DeepSeek-R1**，路线接近 OpenAI 的 o1/o3 系列。与依赖大量人工反馈做后训练不同，R1 采用了 DeepSeek 开创的“冷启动”策略：只使用少量监督数据，把重点放在**强化学习**上，直接将思维链推理能力嵌入模型。这种做法同时压低了训练成本和训练时间，也说明软件和算法设计足够聪明时，可以在相当程度上弥补硬件瓶颈。
+
+#### 1.4 DeepSeek 工程创新
+
+DeepSeek 的工程团队几乎把整条系统栈都做了针对 H800 约束的重优化：从 attention kernel、FP8 矩阵乘法和 MoE 通信，到专家负载均衡、双向流水线并行，再到底层文件系统。
 
 | 项目 | 简介 |
 | --- | --- |
-| **[DualPipe](https://github.com/deepseek-ai/DualPipe)** | 双向流水线并行，重叠前向/反向计算与通信，减少 pipeline bubble |
-| **[DeepGEMM](https://github.com/deepseek-ai/deepgemm)** | FP8 优化矩阵乘法，在 DeepSeek 实际 shape 上超越多数厂商内核 |
-| **[FlashMLA](https://github.com/deepseek-ai/FlashMLA)** | 针对 MLA 的 CUDA C++ attention kernel，高效利用 H800 的内存层级 |
-| **[DeepEP](https://github.com/deepseek-ai/DeepEP)** | MoE 专用 all-to-all 通信库，支持 NVLink + RDMA 分层转发 |
-| **[EPLB](https://github.com/deepseek-ai/EPLB)** | 冗余专家负载均衡，复制热门专家到多块 GPU 以分散负载 |
-| **[3FS](https://github.com/deepseek-ai/3FS)** | 高性能分布式文件系统，饱和 NVMe SSD/RDMA 带宽，统一服务训练和推理 I/O |
+| **[FlashMLA](https://github.com/deepseek-ai/FlashMLA)** | 用 CUDA/CUDA C++ 实现的高性能 MLA attention kernel 库，针对 Multi-Head Latent Attention 优化解码计算和 KV cache 访问路径 |
+| **[DeepGEMM](https://github.com/deepseek-ai/deepgemm)** | 轻量级 FP8 优化矩阵乘法库，在多种矩阵形状和小 batch 场景下，性能可与基于 CUTLASS 等深度调优实现持平甚至更优 |
+| **[DeepEP](https://github.com/deepseek-ai/DeepEP)** | 为 MoE/专家并行定制的高性能通信库，重点优化专家的 dispatch/combine all-to-all 通信，缓解专家并行通信瓶颈 |
+| **[EPLB](https://github.com/deepseek-ai/EPLB)** | 基于冗余专家策略的负载均衡组件，通过复制高负载专家并分布到多块 GPU，上下两级调度缓解 MoE 训练中的负载不均 |
+| **[DualPipe](https://github.com/deepseek-ai/DualPipe)** | 双向流水线并行算法，通过同时重叠前向/反向计算与跨节点通信，显著减少 pipeline bubble、提高大模型训练吞吐 |
+| **[3FS](https://github.com/deepseek-ai/3FS)** | 高性能分布式文件系统，为训练数据读取、checkpoint 及大规模 KV cache 提供统一的高吞吐存储 I/O 基础设施 |
 
 这些项目全部来自 DeepSeek 2025 年 2 月的 Open Source Week，汇总在 [open-infra-index](https://github.com/deepseek-ai/open-infra-index) 仓库中。下面逐个展开。
-
-**FlashMLA — attention kernel**
-
-[FlashMLA](https://github.com/deepseek-ai/FlashMLA) 解决的是 LLM 推理 decode 阶段的**内存带宽瓶颈**。每生成一个 token 都要从 HBM 加载整段 KV cache，上下文一长，GPU 计算单元就在等数据。
-
-FlashMLA 针对的是 DeepSeek-V2 提出的 **Multi-head Latent Attention (MLA)**——把 K 和 V 联合压缩成共享的低秩潜表示，不再缓存完整的 K/V 向量。效果：
-
-| 指标 | MLA (DeepSeek-V3) | 标准 MHA (Llama-3.1 405B) |
-| --- | ---: | ---: |
-| KV cache / token | **70 KB** | 516 KB |
-| 压缩率 | ~93% | — |
-
-kernel 层面，FlashMLA 有两种模式：**Naive**（在原始空间计算，适合 compute-bound 的 prefill）和 **Absorb**（把投影矩阵离线吸收，适合 memory-bound 的 decode）。FP8 KV cache 每 token 恰好 **656 字节**（512B 量化数据 + 16B scale + 128B 未量化的 RoPE 部分），decode 时 on-the-fly 反量化到 BF16 计算。
-
-| GPU | 场景 | 性能 |
-| --- | --- | ---: |
-| H800 | Dense decode (memory-bound) | 3000 GB/s |
-| H800 | Dense decode (compute-bound) | 660 TFLOPS |
-| H800 | Sparse decode (FP8 KV) | 410 TFLOPS |
-| B200 | Dense prefill (forward) | 1460 TFLOPS |
-
-2025 年 9 月随 DeepSeek-V3.2 发布了 **DeepSeek Sparse Attention (DSA)**：用 ~0.6B 参数的 Lightning Indexer 在 FP8 下快速扫全文，选出 top-k ≈ 2√L 个 token 做精细注意力，仅占总 FLOPs 的 **0.8%**。
-
-**DeepGEMM — FP8 矩阵乘法**
-
-[DeepGEMM](https://github.com/deepseek-ai/deepgemm) 是一个极简的 FP8 GEMM 库。核心 kernel 逻辑只有 **~300 行 CUDA**，但在 DeepSeek 实际使用的矩阵形状上普遍超过 cuBLAS 和 CUTLASS。
-
-设计上的几个关键选择：
-- **全 JIT 编译**：不需要安装时编译，矩阵形状作为编译期常量，省寄存器、方便激进优化
-- **FP8 精度修正**：Tensor Core 的 FP8 累加器只有 ~14 bit 精度，DeepGEMM 用 CUDA Core 做两级累积（promotion）来修正
-- **借用但不依赖 CUTLASS**：直接调用 CuTe 的 TMA/WGMMA 原语作为薄封装，刻意不使用 CUTLASS 的模板代数层
-
-| GPU | 峰值 FP8 TFLOPS | 时间 |
-| --- | ---: | --- |
-| H800 | **1550** | 2025.04 |
-| H100 | **1402** | 2025.03 |
-
-支持三种 MoE 布局：普通 dense、**contiguous grouped**（prefill，各专家 token 拼成连续张量）、**masked grouped**（decode + CUDA graph，用 mask 跳过无效部分）。2025 年 7 月完成了 SM100 (Blackwell) 的全面重构。
-
-**DeepEP — MoE 专家并行通信**
-
-[DeepEP](https://github.com/deepseek-ai/DeepEP) 解决的是 MoE 模型里 token 在 GPU 之间动态路由的通信问题。和 NCCL 的标准 all-to-all 不同，MoE 的 dispatch/combine 是**动态大小、非对称的**——每个 GPU 发往每个专家的 token 数在每一步都不同。DeepEP 把元数据聚合、buffer 管理、token 路由和数据传输全部融进专用 kernel。
-
-两类 kernel 面向不同场景：
-
-| 类型 | 适用场景 | 通信路径 | CUDA Graph 兼容 |
-| --- | --- | --- | --- |
-| **Normal** (高吞吐) | 训练、prefill | NVLink（节点内）→ RDMA（跨节点）分层转发 | 否 |
-| **Low-latency** (低延迟) | 推理 decode | 纯 RDMA | 是 |
-
-关键机制：
-- **SM 控制**：`Buffer.set_num_sms(N)` 让通信只用 N 个 SM（如 20/132），其余留给计算——实现零 SM 开销的 computation-communication overlap
-- **FP8 dispatch**：支持 FP8 dispatch + BF16 combine 的生产配置，dispatch 数据量减半
-- **Hook 机制**：`return_recv_hook` 让 combine 的数据一到就触发下游计算，不需要显式同步
-
-**DualPipe — 双向流水线并行**
-
-[DualPipe](https://github.com/deepseek-ai/DualPipe) 解决流水线并行里的 **pipeline bubble**。传统的 1F1B 调度里，bubble 时间是 `(PP-1)(F+B)`。DualPipe 从两端同时注入 micro-batch，把每层 Transformer 拆成 4 段（Attention → All-to-All Dispatch → MLP → All-to-All Combine），在通信段和计算段之间交叉调度。
-
-| 方法 | Bubble | 每设备参数量 | 每设备激活量 |
-| --- | --- | --- | --- |
-| 1F1B | (PP-1)(F+B) | 1x | PP |
-| ZB1P | (PP-1)(F+B-2W) | 1x | PP |
-| **DualPipe** | **(PP/2-1)(F&B+B-3W)** | **2x** | PP+1 |
-
-代价是每个 device 需要存**两份参数**（正向和反向各一份）。Sea AI Lab 在此基础上提出了 [DualPipeV](https://hackmd.io/@ufotalent/r1lVXsa9Jg)（V 形变体），只需 PP/2 个 device 即可实现 PP 个 stage 的效果。DualPipe 也已提交到 [pytorch/pytorch PR #159591](https://github.com/pytorch/pytorch/pull/159591)。
-
-**EPLB — 专家并行负载均衡**
-
-[EPLB](https://github.com/deepseek-ai/EPLB) 解决 MoE 推理中**专家负载不均**的问题。如果某些"热门专家"被路由到的 token 远多于其他专家，承载它的 GPU 就会成为瓶颈。
-
-核心思路是**冗余专家策略**：把高负载专家复制到多块 GPU 上，再用启发式装箱算法把副本分配到各 GPU，使整体负载均衡。提供两种策略：
-
-| 策略 | 适用条件 | 做法 |
-| --- | --- | --- |
-| **Hierarchical** | 节点数能整除专家组数 | 先按组分到节点（减少跨节点通信），再在节点内复制和分配 |
-| **Global** | 其他情况 | 忽略专家分组，全局复制再装箱到 GPU |
-
-EPLB 已集成到 [vLLM](https://github.com/vllm-project/vllm/pull/18343) 和 [LMDeploy](https://github.com/InternLM/lmdeploy/pull/3572)，用于推理时动态负载均衡。
-
-**3FS — 分布式文件系统**
-
-[3FS (Fire-Flyer File System)](https://github.com/deepseek-ai/3FS) 解决的是 AI 训练和推理中的**存储瓶颈**。训练需要把数据快速喂给上千块 GPU，checkpoint 需要快速落盘和恢复，推理的 KVCache 需要高吞吐的持久化存储。3FS 从零开始设计，统一服务这些场景。
-
-架构上采用**解聚合设计**：把上千块 NVMe SSD 和数百个存储节点的带宽汇聚起来，应用可以 locality-oblivious 地访问。元数据服务是无状态的，后端用 FoundationDB（Apple 的分布式事务 KV 存储）。一致性用 **CRAQ**（Chain Replication with Apportioned Queries），提供线性化一致性。存储节点的 chunk engine 用 Rust 实现，I/O 用 io_uring。
-
-| 场景 | 性能 | 配置 |
-| --- | ---: | --- |
-| 聚合读吞吐 | **6.6 TiB/s** | 180 存储节点 + 500+ 客户端 |
-| GraySort 排序 | **3.66 TiB/min**（110.5 TiB 数据，30 分 14 秒） | 25 存储节点 + 50 计算节点 |
-| KVCache 单客户端峰值 | **40+ GiB/s** | 1×400Gbps NIC |
-
-DeepSeek 还在 SC24 发表了 [*Fire-Flyer AI-HPC*](https://arxiv.org/abs/2408.14158) 论文，描述了如何用 10,000 块 A100 和自研存储栈构建高性价比训练平台。基于 3FS 的数据处理框架 [Smallpond](https://github.com/deepseek-ai/smallpond) 也已开源。
-
----
-
-2025 年 5 月，DeepSeek 团队进一步在 ISCA 2025 发表了 [*Insights into DeepSeek-V3: Scaling Challenges and Reflections on Hardware for AI Architectures*](https://arxiv.org/abs/2505.09343)，从系统角度总结了四个核心发现：
-
-1. **MLA 的内存效率**：KV cache 仅需 70 KB/token，而 Llama-3.1 405B 需要 516 KB
-2. **FP8 混合精度训练**：内存占用比 BF16 减半，同时保持训练精度
-3. **多平面网络拓扑**：替代传统三层胖树，减少集群级网络开销
-4. **计算-通信重叠**：通过自研 CUDA kernel 绕过 NCCL 默认 collective，实现更精细的 overlap
-
-#### 1.4 DeepSeek-R1：推理模型
-
-在 V3 基础上，DeepSeek 进一步构建了 **DeepSeek-R1** 推理模型（类似 OpenAI 的 o1/o3 系列）。R1 的创新在于采用"冷启动"策略——使用极少的人工标注数据，主要通过**强化学习**将思维链推理能力嵌入模型。这进一步节省了人力标注成本。
 
 ### 2. 迈向百万亿参数模型
 
@@ -630,13 +523,11 @@ Kyber 将首先随 Vera Rubin Ultra 以独立 NVL144 系统的形式推出，为
 
 ### 4. 协同设计（Co-design）
 
-这里把 **Mechanical Sympathy** 理解为**协同设计（Co-design）**更合适：算法、软件和硬件不是各自独立优化，而是围绕同一组瓶颈一起演进。很多性能问题表面看像是算力不够，真正卡住系统的往往是 HBM 带宽、片上 SRAM、KV cache、互连和数值格式。
-
 #### 4.1 FlashAttention
 
-FlashAttention 的演进几乎就是协同设计本身的缩影：它一直没有改掉 Transformer 的注意力定义，而是持续根据 GPU 的真实瓶颈去重排数据流、并行方式和 kernel pipeline。版本从 1 到 4 的变化，可以理解为一条很清晰的路径：先解决 HBM 往返，再解决并行分工，再吃满 Hopper 的异步与低精度能力，最后再针对 Blackwell 的非对称硬件 scaling 重写整条 pipeline。
+真实系统里的经验反复说明，哪怕只是 GPU kernel 或内存访问模式上的小改动，也可能带来远超直觉的收益。FlashAttention 就是一个经典例子：它没有改变 Transformer 注意力的数学定义，而是以一种更贴近硬件的方式重写 attention 计算。它的核心做法是把 GPU 上的计算切成 tile，尽量减少对显存的读写次数，从而显著降低数据搬运开销并加快 attention 计算。
 
-**[FlashAttention-1](https://arxiv.org/abs/2205.14135v2)（2022）** 首次把 attention 明确地当成一个 **I/O 问题**来处理。
+**[FlashAttention-1](https://arxiv.org/abs/2205.14135)（2022）** 首次把 attention 明确地当成一个 **I/O 问题**来处理。
 
 要理解 FlashAttention 在优化什么，先看 GPU 内部的数据流动方式。
 
@@ -717,7 +608,7 @@ $$m^{(1)} = \max(x^{(1)}), \quad \ell^{(1)} = \sum_i e^{x^{(1)}_i - m^{(1)}}$$
 
 $$m^{(2)} = \max(m^{(1)},\, \max(x^{(2)})), \quad \ell^{(2)} = e^{m^{(1)} - m^{(2)}} \ell^{(1)} + \sum_i e^{x^{(2)}_i - m^{(2)}}$$
 
-$m$ 跟踪全局最大值（数值稳定），$\ell$ 跟踪 exp 求和（softmax 分母）。每来一块新数据，用 $e^{m_{old} - m_{new}}$ 修正旧的 $\ell$，再累加新块的 exp。输出 $O$ 也做同样的 rescaling：
+**$m$ 跟踪全局最大值（数值稳定）**，**$\ell$ 跟踪 exp 求和（softmax 分母）**。每来一块新数据，用 $e^{m_{old} - m_{new}}$ 修正旧的 $\ell$，再累加新块的 exp。输出 $O$ 也做同样的 rescaling：
 
 $$O^{(2)} = \frac{\ell^{(1)}}{\ell^{(2)}} \cdot O^{(1)} + \frac{1}{\ell^{(2)}} \cdot \tilde{P}^{(2)} V^{(2)}$$
 
@@ -801,333 +692,53 @@ FlashAttention 带来的收益非常直接：
 
 ---
 
-**[FlashAttention-2](https://princeton-nlp.github.io/flash-atttention-2/)（2023，ICLR 2024）** 解决的是 FlashAttention-1 还没有吃满 GPU 的问题。第一版虽然已经比优化过的 baseline 快 2-4 倍，但在 A100 上仍只有 25-40% 的理论 FLOPs 利用率。瓶颈从"HBM 搬运太多"收敛成了"thread block 和 warp 的分工不够好"。
+**FlashAttention-1 到 FlashAttention-4 的概览如下：**
 
-三项关键改动：
+| 版本 | 年份 | 关键改进 | 性能 | 备注 |
+| --- | --- | --- | --- | --- |
+| [FlashAttention-1](https://arxiv.org/abs/2205.14135) | 2022 | 引入 I/O-aware 分块 attention；融合 softmax 与 matmul kernel；避免物化完整 attention 矩阵 | **attention 速度提升 2-4 倍**；显存占用最高降低 10 倍 | 第一版；支持实用长上下文；exact attention（非近似） |
+| [FlashAttention-2](https://arxiv.org/abs/2307.08691) | 2023 | 改进 warp / thread block 并行与 work partitioning；减少 non-matmul FLOPs | **相比 FA-1 再快约 2 倍**，长序列下更明显 | 支撑了很多长上下文 LLM；已广泛集成到训练和推理框架 |
+| [FlashAttention-3](https://arxiv.org/abs/2407.08608) | 2024 | Tensor Core 加速（FP8/BF16）；针对 Hopper GPU（如 H100）优化 | **相比 FA-2 最高再快 2 倍**；H100 达到 740 TFLOPS（75% 利用率）；FP8 误差降低 2.6 倍 | 面向 Hopper 的专门优化版本；把 WGMMA、TMA、FP8 等硬件能力真正用起来 |
+| [FlashAttention-4](https://arxiv.org/abs/2603.05451) | 2026 | 针对 Blackwell 重写 pipeline；fully asynchronous MMA；减少 non-matmul 和 backward pass 流量 | B200 BF16 达到 1613 TFLOPS（71% 利用率）；相较 cuDNN 最高快 1.3 倍；相较 Triton 最高快 2.7 倍 | 面向 Blackwell；基于 CuTe-DSL 实现，继续针对新硬件重排瓶颈 |
 
-- **减少 non-matmul FLOPs**：尽量把时间花在 Tensor Core 擅长的矩阵乘法上
-- **sequence length 维度并行**：改善长序列、小 batch 时的 SM 占用
-- **sliced-K → sliced-Q**：减少 warps 之间通过 shared memory 做同步与归约的成本
+**参考资料**
 
-性能结果：
-
-- A100 最高 230 TFLOPS/s，端到端训练 GPT 风格模型最高 225 TFLOPS/s（72% model FLOP utilization）
-- 相比标准 PyTorch attention，部分配置下快 9 倍
-- 支持扩展到 head dimension 256，新增 MQA / GQA
-
----
-
-**[FlashAttention-3](https://tridao.me/blog/2024/flash3/)（2024）** 面向 Hopper 架构的重新设计。FlashAttention-2 在 H100 上仅约 35% 理论峰值，原因是没有利用 Hopper 的新硬件能力。
-
-围绕三项硬件能力展开：
-
-- **WGMMA**：提高 Tensor Core 矩阵乘吞吐
-- **TMA**：加速 global memory → shared memory 搬运
-- **FP8**：进一步提高低精度吞吐
-
-算法 / kernel 层面的三个改进：
-
-- 利用 Tensor Core 和 TMA 的异步特性，通过 **warp specialization** 重叠数据搬运与计算
-- 把 block-wise matmul 和 softmax **交错执行**，让 Tensor Core 和 special function units 同时工作
-- 通过 **incoherent processing**（如 Hadamard transform）减小 FP8 量化时 activation outlier 带来的误差
-
-性能结果：
-
-- FP16 比 FlashAttention-2 快 1.5-2.0 倍，H100 最高 740 TFLOPS（75% 理论峰值）
-- FP8 路径接近 1.2 PFLOPS，误差比 baseline FP8 attention 小 2.6 倍
+- [FlashAttention from First Principles](https://ai.gopubby.com/flashattention-from-first-principles-part-1-5a9f2407d739#bypass)
+- [FlashAttention — Visually and Exhaustively Explained](https://ai.gopubby.com/flashattention-visually-and-exhaustively-explained-d6124670f7fb#bypass)
+- [Flash Attention 2.0 with Tri Dao (author)!](https://www.youtube.com/watch?v=IoMSGuiwV3g&t=2240s)
+- [Flash Attention学习过程【详】解](https://www.bilibili.com/video/BV1FM9XYoEQ5)
+- [ELI5: FlashAttention](https://gordicaleksa.medium.com/eli5-flash-attention-5c44017022ad)
+- [Designing Hardware-Aware Algorithms: FlashAttention](https://www.digitalocean.com/community/tutorials/flashattention)
+- [FlashAttention: Fast and Memory-Efficient Exact Attention With IO-Awareness](https://www.nvidia.com/en-us/on-demand/session/gtc24-s62546/)
 
 ---
-
-**[FlashAttention-4](https://arxiv.org/abs/2603.05451)（2026）** 目标从 Hopper 转向 Blackwell。核心判断：Blackwell 的硬件 scaling 明显不对称 — Tensor Core 吞吐翻倍，但 shared memory 带宽、指数运算单元等未等比例增长，旧版 pipeline 的瓶颈位置因此发生变化。
-
-三类改动：
-
-- **Pipeline 重设计**：利用 fully asynchronous MMA 和更大的 tile
-- **减少非矩阵乘法开销**：software-emulated exponential + conditional softmax rescaling
-- **降低 backward pass 开销**：引入 Tensor Memory 和 2-CTA MMA mode，减少 shared memory 流量和 atomic adds
-
-实现亮点：完全用嵌入 Python 的 **CuTe-DSL** 编写，编译速度比传统 C++ 模板实现快 20-30 倍。
-
-性能结果（B200 BF16）：
-
-- 相较 cuDNN 9.13 最高快 1.3 倍，相较 Triton 最高快 2.7 倍
-- 绝对性能最高 1613 TFLOPS（71% B200 理论峰值）
 
 #### 4.2 DeepSeek MLA
 
-DeepSeek 的 **Multi-Head Latent Attention (MLA)** 是另一条协同设计路径。它没有沿着标准 attention 的缓存结构继续堆资源，而是直接重写 KV 表示与数据流，把 KV cache 压到更低水平。对显存和互连都更受限的 H800 类硬件来说，这种设计尤其重要：KV cache 更小，batch size 和并发余地更大，decode 阶段也更不容易被内存带宽拖住。FlashMLA 的价值不只是“又一个 kernel”，而是根据具体硬件约束重新组织 attention 的存储与访问模式。
+DeepSeek 的 MLA 算法以 NVIDIA GPU kernel 的形式实现，并于 2025 年开源，是软硬件协同设计的另一个例子。与 FlashAttention 类似，MLA 重新组织了 attention 计算，以更好地利用 NVIDIA 的内存层级和专用的 GPU Tensor Cores。这些优化使 MLA 能够更充分地利用受限的 H800 GPU 架构，以更低的成本实现更高的吞吐量，甚至在同样的 H800 系统上超过了 FlashAttention 的性能。
 
-#### 4.3 Reduced-Precision Quantization
+<Frame caption="MHA、GQA、MQA 和 MLA 的 KV cache 组织方式对比：MHA 每个 head 独立缓存 K/V，GQA 按组共享 K/V，MQA 所有 heads 共享一组 K/V，MLA 则缓存压缩后的 latent KV，并在使用时投影回各个 head。">
+  <img src="/books/ai-systems-performance-engineering/images/mha-gqa-mqa-mla.png" alt="Comparison of MHA, GQA, MQA, and MLA showing different KV cache organizations during inference" />
+</Frame>
 
-**Reduced-precision quantization** 也是协同设计的典型体现。FP8、FP4 这类低精度格式并不只是把位宽变小，它们同时改变了数据表示、scaling 方式和硬件执行路径：算法侧需要接受更粗粒度的数值表示，软件侧需要处理 per-tensor / per-block scaling，硬件侧则通过 Transformer Engine、FP8 / FP4 Tensor Core 和 microscaling 支持把这些格式真正转化为吞吐提升。低精度量化之所以有价值，不只是因为“精度更低”，而是因为它把显存占用、内存带宽和计算密度一起重新平衡了。
+**MHA (Multi-Head Attention)** 是标准 Transformer 里的注意力形式。每个 head 都有独立的 `W_Q^(i)`、`W_K^(i)`、`W_V^(i)`，每个头各自计算注意力，最后把所有头的输出拼接再投影回去。它的表达能力最完整，但 decode 阶段也必须为每个 head 缓存完整 K/V，因此 KV cache 最大。
 
-### 5. 衡量 "Goodput"——有效吞吐量
+**MQA (Multi-Query Attention)** 保留多个 query heads，但所有 heads 共享同一组 K/V。这样 KV cache 从 `h` 份降到 `1` 份，显著减轻显存占用和 HBM 读流量，推理速度通常更高；代价是不同 heads 看到的是同一套 K/V，表达能力往往弱于 MHA。
 
-传统的吞吐量指标（FLOPS、设备利用率）往往具有误导性——很多时间实际上花在了通信等待、空闲计算或失败重试上。**Goodput** 衡量的是真正用于有用工作的吞吐量。
+**GQA (Grouped-Query Attention)** 是 MHA 和 MQA 之间的折中。它把 `h` 个 query heads 分成 `g` 组，每组共享一套 K/V，因此总共有 `g` 份 K/V。它保留了更多头间差异，通常比 MQA 更稳，但本质上仍然是在做 K/V 的“硬共享”。
 
-#### 5.1 定义与计算
+**MLA（Multi‑Head Latent Attention）** 先把所有头的 K/V 合在一起做一次低维压缩，只把这个共享的 latent 表示写进 KV cache，然后在算注意力时，各个头再用自己的变换从同一个 latent 里解码出各自的 K/V。这样既大幅缩小了 KV cache 的体积，又保留了不同注意力头之间的差异，不像 MQA/GQA 那样只是简单地共用同一套 K/V。
 
-```python
-# Goodput 示例计算
-tokens_processed = 10_000       # 实际处理的 token 数
-time_seconds = 10               # 实际耗时
+| 机制 | KV cache 大小 | 推理效率 | 表达能力 | 核心操作 |
+| --- | --- | --- | --- | --- |
+| **MHA** | 最大，随 head 数线性增加 | 基线 | 最高 | 每个 head 独立 Q/K/V |
+| **MQA** | 最小，只有 1 份 K/V | 最快或接近最快 | 通常弱于 MHA | 所有 query heads 共享同一组 K/V |
+| **GQA** | 中等，有 `g` 份 K/V | 比 MHA 快 | 通常介于 MHA 和 MQA 之间 | query heads 分组，组内共享 K/V |
+| **MLA** | 显著减少，缓存低维 latent | 实践中通常快于 MHA，接近 GQA/MQA | 在 DeepSeek 实验中可接近甚至超过 MHA | K/V 低秩联合压缩 + head-specific 上投影 |
 
-goodput = tokens_processed / time_seconds  # 10,000 tokens/s 实际吞吐量
+#### 4.3 低精度量化
 
-# 如果峰值理论吞吐量是 12,000 tokens/s
-peak_throughput = 12_000
-efficiency = goodput / peak_throughput     # 83.3% 效率
-
-print(f"Goodput: {goodput:,} tokens/s")
-print(f"峰值理论吞吐量: {peak_throughput:,} tokens/s")
-print(f"系统效率: {efficiency:.1%}")
-```
-
-<Tip>
-NVIDIA 将硬件理论峰值称为**光速（Speed of Light）**。你在 NVIDIA 的博客、文档和会议演讲中经常会看到这个说法。
-</Tip>
-
-#### 5.2 Goodput 概念的来源
-
-Goodput 这个词并不是原书发明的。在 AI 训练场景里，最系统地定义和度量 Goodput 的工作来自 Google。2025 年 2 月，Google 发布了论文 [*Machine Learning Fleet Efficiency: Analyzing and Optimizing Large-Scale Google TPU Systems with ML Productivity Goodput*](https://arxiv.org/abs/2502.06982)，在数千台 TPU 的生产集群上提出了 **ML Productivity Goodput (MPG)** 指标。MPG 不仅看算力利用率，还把模型架构、数据管线、编译器、调度器等全栈因素一起纳入度量。Google 同时开源了 [ml-goodput-measurement](https://github.com/google/cloud_tpu_goodput) 库，可以直接在训练作业里记录 Goodput 和 Badput（非生产时间）的分解。
-
-与之对应的是 Meta 的视角。Meta 在 2025 年的 [*Revisiting Reliability in Large-Scale Machine Learning Research Clusters*](https://ai.meta.com/research/publications/revisiting-reliability-in-large-scale-machine-learning-research-clusters/) 论文中提出了 **Effective Training Time Ratio (ETTR)** 指标，更侧重从可靠性和故障恢复的角度衡量"有效训练时间占比"。
-
-| 指标 | 提出方 | 侧重点 | 开源工具 |
-| --- | --- | --- | --- |
-| **ML Productivity Goodput (MPG)** | Google (2025) | 全栈效率：硬件 + 模型 + 数据 + 编译器 + 调度 | [ml-goodput-measurement](https://github.com/google/cloud_tpu_goodput) |
-| **Effective Training Time Ratio (ETTR)** | Meta (2025) | 可靠性维度：故障、抢占、checkpoint 恢复 | 论文内分析框架 |
-
-两者不矛盾，反而互补：MPG 告诉你"全栈里哪一层在浪费"，ETTR 告诉你"大规模集群的可靠性损耗有多严重"。
-
-#### 5.3 Meta ETTR 的具体发现
-
-通过分析 11 个月的数据（覆盖两个大型 ML 集群、400 万个作业、超过 1.5 亿 A100 GPU 小时），Meta 发现：
-
-- 即使集群表面上 100% 利用，实际只有 **25%–30%** 的计算在做有用工作
-- 剩余 **70%–75%** 的计算被通信延迟、次优并行化、数据延迟和故障恢复消耗
-- 大作业最容易受到故障影响，ETTR 最低
-
-ETTR 的构成：
-- **Checkpoint 读写时间** — 从检查点恢复和保存检查点的开销
-- **训练浪费** — 因故障丢失的未保存训练进度
-- **通信同步** — GPU 间梯度同步的等待时间
-
-#### 5.4 缩小 Goodput 差距
-
-| 瓶颈 | 优化手段 |
-| --- | --- |
-| GPU 等待数据加载 | 引入缓存或异步预取 |
-| 梯度同步时 GPU 空闲 | 重叠计算与通信（computation-communication overlap） |
-| 检查点写入阻塞训练 | 异步 checkpoint、分布式 checkpoint 分区写入 |
-| 作业故障重启 | 更频繁的 checkpoint、弹性训练 |
-
-### 6. 配套代码实验
-
-书中的代码仓库提供了两组对比实验，展示了第一章的核心优化思想。
-
-#### 6.1 实验一：训练循环 Goodput 优化
-
-对比 **FP32 逐批训练** vs **FP16 + 批次融合**——不改变算法逻辑，仅通过精度切换和批次融合来提升训练吞吐量。
-
-**Baseline（FP32，逐 microbatch 前向/反向）：**
-
-```python
-# baseline: FP32 精度，每个 microbatch 单独前向+反向
-model = torch.nn.Sequential(
-    torch.nn.Linear(8192, 8192),
-    torch.nn.ReLU(),
-    torch.nn.Linear(8192, 8192),
-    torch.nn.ReLU(),
-    torch.nn.Linear(8192, 10),
-).to("cuda")  # FP32
-
-microbatches = [torch.randn(32, 8192, device="cuda") for _ in range(64)]
-
-# 每组 8 个 microbatch 累积梯度后更新
-for start in range(0, 64, 8):
-    optimizer.zero_grad(set_to_none=True)
-    for data, target in zip(microbatches[start:start+8], targets[start:start+8]):
-        logits = model(data)                                      # FP32 前向
-        loss = torch.nn.functional.cross_entropy(logits, target)
-        (loss / 8).backward()                                     # FP32 反向
-    optimizer.step()
-```
-
-**Optimized（FP16 + 批次融合）：**
-
-```python
-# optimized: FP16 精度 + 预先 cat 批次，减少 kernel launch 次数
-model = model.half()  # 切换到 FP16，利用 Tensor Core
-dtype = torch.float16
-
-# 在 setup 阶段预先融合批次——减少循环中的 kernel dispatch 开销
-fused_batches = []
-for start in range(0, 64, 8):
-    batch = torch.cat(microbatches[start:start+8], dim=0)    # [256, 8192]
-    fused_batches.append(batch)
-
-# 训练循环：更少的 forward/backward 调用，更大的矩阵 → 更高的 GPU 利用率
-for data, target in zip(fused_batches, fused_targets):
-    optimizer.zero_grad(set_to_none=True)
-    logits = model(data)                                      # FP16 前向，一次处理 256 样本
-    loss = torch.nn.functional.cross_entropy(logits, target)
-    loss.backward()                                           # FP16 反向
-    optimizer.step()
-```
-
-两个优化点：
-1. **FP16 精度** — 利用 Tensor Core 加速矩阵运算，内存带宽需求减半
-2. **批次融合** — 将 8 个小 microbatch cat 成一个大 batch，减少 kernel launch 次数，提高 GPU 利用率
-
-实测结果：
-
-| 指标 | Baseline (FP32) | Optimized (FP16 + Fusion) | 加速比 |
-| --- | ---: | ---: | ---: |
-| 单次迭代时间 | 68.836 ms | 14.286 ms | **4.82×** |
-
-#### 6.2 实验二：CUDA GEMM Launch 开销优化
-
-对比**逐个 GEMM 调用** vs **Batched GEMM 单次调用**——展示 kernel launch 开销在小矩阵上的巨大影响。
-
-**Baseline（40 次独立 `cublasSgemm` 调用）：**
-
-```c
-// 40 个独立 GEMM，每个需要一次 kernel launch
-for (int i = 0; i < batch_count; ++i) {
-    cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-                n, m, k, &alpha,
-                d_B[i], n, d_A[i], k,
-                &beta, d_C[i], n);
-    // 每次调用：CPU 端 dispatch → driver → GPU kernel 执行
-    // 对于小矩阵 (32×256×256)，launch 开销可能 > 计算时间
-}
-```
-
-**Optimized（1 次 `cublasSgemmBatched` 调用）：**
-
-```c
-// 1 次 batched GEMM 调用，内部处理所有 40 个矩阵乘法
-cublasSgemmBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N,
-                   n, m, k, &alpha,
-                   (const float**)d_B_array, n,
-                   (const float**)d_A_array, k,
-                   &beta, d_C_array, n,
-                   batch_count);  // batch_count = 40
-// 单次 launch，driver 一次性调度所有 GEMM
-// GPU 内部可以更好地调度和利用 SM 资源
-```
-
-实测结果：
-
-| 指标 | Baseline（Individual） | Optimized（Batched） | 加速比 |
-| --- | ---: | ---: | ---: |
-| 单次迭代时间 | 0.364 ms | 0.012 ms | **29.51×** |
-| Kernel launches/iter | 40 | 1 | — |
-
-<Accordion title="为什么 batched GEMM 能快这么多？">
-
-对于小矩阵（如 32×256×256），实际计算量很小，瓶颈在于 **kernel launch 开销**：
-
-1. **CPU 端分发** — 每次 `cublasSgemm` 调用需要 CPU 准备参数、调用 driver
-2. **Driver 处理** — CUDA driver 验证参数、设置 kernel 上下文
-3. **GPU 调度** — GPU 接收并调度 kernel
-
-这些开销对于大矩阵可以忽略不计，但对于小矩阵来说可能占总时间的 90% 以上。`cublasSgemmBatched` 将 40 次 launch 合并为 1 次，**分摊（amortize）了 launch 开销**。
-
-这个例子说明了一个关键教训：**性能瓶颈不一定在计算本身，可能在调度和通信等"辅助"开销上**。
-
-</Accordion>
-
-#### 6.3 运行配套代码
-
-```bash
-cd ai-performance-engineering/code
-
-# 快速对比：运行第一章所有 baseline vs optimized 对
-python -m ch01.compare
-
-# 使用 CLI 工具运行 benchmark
-python -m cli.aisp bench run --targets ch01 --profile minimal
-
-# 对 GEMM 做深度 profiling（需要 nsys/ncu）
-python -m cli.aisp bench run --targets ch01:gemm --profile deep_dive --single-gpu
-```
-
-### 7. MLPerf 与 MLCommons benchmark 生态
-
-[MLPerf](https://mlcommons.org/benchmarks/) 是 [MLCommons](https://mlcommons.org/) 维护的开放 benchmark 套件。但 MLPerf 只是 MLCommons 旗下众多 benchmark 中的一部分。完整的生态其实覆盖了从数据中心训练到端侧推理、从存储到 AI 安全的多个维度：
-
-| 套件 | 度量什么 | 最新进展 |
-| --- | --- | --- |
-| **[MLPerf Training](https://mlcommons.org/benchmarks/training/)** | 在固定规则下，多快能把模型训练到目标质量（`time-to-quality`） | v5.1 (2025.11)：Blackwell Ultra 在全部 7 项 benchmark 上拿到最快成绩 |
-| **[MLPerf Inference](https://mlcommons.org/benchmarks/inference-datacenter/)** | 已训练模型在 Datacenter / Edge / Mobile / Tiny 场景下的推理吞吐与延迟 | v5.1 (2025.09)：新增 DeepSeek-R1 reasoning benchmark，首次系统性覆盖长生成路径 |
-| **[MLPerf Storage](https://mlcommons.org/benchmarks/storage/)** | 存储系统能多快把训练数据和 checkpoint 喂给算力 | v2.0 (2025.08)：新增 checkpoint 工作负载，模拟 Llama-3 级别的 18 TB checkpoint 场景 |
-| **[MLPerf Client](https://mlcommons.org/benchmarks/client/)** | LLM 和 AI 负载在个人电脑（笔记本、台式机、工作站）上的性能 | 首轮结果已发布 |
-| **[MLPerf Automotive](https://mlcommons.org/benchmarks/mlperf-automotive/)** | ADAS / 自动驾驶和车载娱乐系统的推理性能 | v0.5：2D/3D 目标检测、语义分割 |
-| **[AlgoPerf](https://mlcommons.org/benchmarks/algorithms/)** | 如果改的是训练算法（优化器、超参数）而不是硬件，能提速多少 | 8 个固定 workload，跨图像分类、语音、翻译等任务 |
-| **[AILuminate](https://mlcommons.org/ailuminate/)** | AI 系统的安全性评测：12 类风险（偏见、有害内容、越狱等） | 已评测 109 个模型，使用 59,624 条测试 prompt |
-
-<Tip>
-MLPerf Storage v2.0 特别值得关注。它新增的 checkpoint 工作负载直接模拟了大规模训练中最常见的 I/O 瓶颈之一：Meta 在训练 Llama-3 时，16,000 块加速器的集群在 54 天里经历了 419 次故障，每次故障后都需要从 checkpoint 恢复。存储速度直接决定了"故障后多快能重新开始有效训练"。
-</Tip>
-
-#### 7.1 MLPerf Training v5.0 (2025) 结果
-
-| 基准测试 | NVIDIA 最快成绩 | 备注 |
-| --- | --- | --- |
-| **LLM 预训练 (Llama 3.1 405B)** | 20.8 分钟 | 首次纳入 405B 规模模型 |
-| **LLM 微调 (Llama 2 70B-LoRA)** | 0.56 分钟 | — |
-| **文本到图像 (Stable Diffusion v2)** | 1.04 分钟 | vs v4.1 提升 2.28× |
-| **图神经网络 (R-GAT)** | 0.84 分钟 | — |
-
-**Blackwell vs Hopper 代际提升：**
-- 训练：单 GPU 吞吐量提升 **~2.6×**
-- 推理：单 GPU 吞吐量提升 **~3.4×**（得益于更大的 NVLink 域）
-
-<Warning>
-MLPerf 提醒：单 GPU 结果不是跨平台比较的主要指标。正确的比较基准是**系统级端到端吞吐量**。单 GPU 数字仅作为组件级参考。
-</Warning>
-
-<Info>
-查看完整的 NVIDIA MLPerf 结果和跨代对比：[NVIDIA AI Performance — MLPerf Benchmarks](https://www.nvidia.com/en-us/data-center/ai-performance/)。MLCommons 官方结果页：[mlcommons.org/benchmarks](https://mlcommons.org/benchmarks/)。
-</Info>
-
-### 8. 推理引擎与分布式 serving 生态
-
-原书后半部分（第 15-19 章）会深入讨论推理优化，但推理 serving 的生态在第一章就值得建立一个全景认知：
-
-| 引擎 | 核心定位 | 关键技术 |
-| --- | --- | --- |
-| **[vLLM](https://github.com/vllm-project/vllm)** | 通用生产部署，最大社区生态 | [PagedAttention](https://arxiv.org/abs/2309.06180) 将 KV cache 分页管理，GPU 内存利用率可达 90%+ |
-| **[SGLang](https://github.com/sgl-project/sglang)** | 多轮对话、agentic 工作流、结构化输出 | RadixAttention（基于基数树的 KV cache 管理），自动 prefix caching |
-| **[TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM)** | 大规模生产部署，追求 NVIDIA 硬件上的极致性能 | 定制 CUDA kernel、kernel fusion、深度集成 NVIDIA 库，需要编译但性能最高 |
-
-在这些引擎之上，[**NVIDIA Dynamo**](https://github.com/ai-dynamo/dynamo) 扮演的是分布式编排层的角色。它把多个推理引擎（vLLM / SGLang / TensorRT-LLM）组织成一个协同工作的多节点系统。Dynamo 最重要的能力之一是 **disaggregated prefill-decode**：把推理拆成计算密集的 prefill 阶段和访存密集的 decode 阶段，分别用不同配置的硬件来服务，通过 [NIXL](https://github.com/ai-dynamo/nixl) 在 GPU 显存之间直接搬运 KV cache，而不走 CPU 中转。
-
-这种拆分的系统意义在于：prefill 和 decode 的计算特征完全不同（一个是大矩阵乘法，一个是逐 token 生成），强行放在同一组硬件上会导致互相干扰。Disaggregated serving 让系统可以按负载特征独立伸缩，这也是后续章节会反复出现的主题。
-
----
-
-## 核心要点
-
-### 核心思想：巧妙的工程优化 > 暴力堆硬件
-
-本章所有内容围绕同一主题——在 AI 系统的每个层级（硬件、软件、算法）寻找并消除低效：
-
-1. **衡量 Goodput，而非原始 FLOPS** — 关注 GPU 执行有用工作的时间比例，而非名义上的设备利用率。使用 Nsight Systems/Compute 和 PyTorch Profiler 测量这个比例。
-
-2. **用工程优化替代暴力投入** — DeepSeek 用受限的 H800 GPU 训练出了接近前沿水平的模型，成本仅为竞争对手的 1/20。关键不在于有多少硬件，而在于如何高效利用。
-
-3. **小优化，大影响** — 在大规模下，即使 1% 的效率提升也能节省数百万美元。反过来，小的低效（冗余计算、慢数据管线）在规模化后会悄悄吞噬巨额成本。
-
-4. **Profile-Driven 优化** — 用数据和 profiling 工具指导优化方向。先找到真正的瓶颈（计算利用率？内存带宽？缓存命中率？通信延迟？），再针对性优化。
-
-5. **全栈视角** — 硬件、软件、算法中任何一层的短板都会成为整体瓶颈。最好的性能工程师会考虑硬件-软件协同设计。
-
-6. **保持学习** — 现代 AI 硬件和软件演进极快。新的能力（统一 CPU-GPU 内存、更快互连、新数值精度格式）会改变最优策略。MLPerf 基准套件是了解 AI 硬件性能的优质资源。
-
----
+**低精度量化** 也是协同设计的典型体现。Transformer 的普及和 FP8、FP4 这类低精度格式的兴起，推动 NVIDIA 增加了 Transformer Engine、面向低精度计算的 Tensor Core、FP4 支持和 microscaling；而这些硬件能力又反过来让研究者可以探索新的数值优化器和神经网络结构，形成持续迭代的正反馈。
 
 ## FAQ
 
