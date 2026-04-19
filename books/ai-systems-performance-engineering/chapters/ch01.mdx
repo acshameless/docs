@@ -24,24 +24,24 @@ title: "第一章：介绍与 AI 系统概览"
 
 由于美国出口管制，DeepSeek 无法获得顶级的 Blackwell（B200、B300）或完整版 Hopper（H100、H200）GPU，只能使用出口合规的 H800。下面这张表可以看出 H800 和其他型号的差距：
 
-| 指标 | [H800](https://chaoqing-i.com/upload/20231128/NVIDIA%20H800%20GPU%20Datasheet.pdf) | [H100 SXM](https://www.nvidia.com/en-us/data-center/h100/) | [H200 SXM](https://www.nvidia.com/en-us/data-center/h200/) | [B200](https://www.nvidia.com/en-us/data-center/dgx-b200/) | [B300](https://www.nvidia.com/en-us/data-center/dgx-b300/) |
+| 指标 | [H800 SXM](https://chaoqing-i.com/upload/20231128/NVIDIA%20H800%20GPU%20Datasheet.pdf) | [H100 SXM](https://www.nvidia.com/en-us/data-center/h100/) | [H200 SXM](https://www.nvidia.com/en-us/data-center/h200/) | [B200](https://nvdam.widen.net/s/wwnsxrhm2w/blackwell-datasheet-3384703) | [B300](https://resources.nvidia.com/en-us-blackwell-architecture/blackwell-ultra-datasheet?ncid=pa-srch-goog-435826) |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | **架构** | Hopper | Hopper | Hopper | Blackwell | Blackwell |
-| **FP64** | 1 TFLOPS | 34 TFLOPS | 34 TFLOPS | — | — |
-| **FP64 Tensor Core** | 1 TFLOPS | 67 TFLOPS | 67 TFLOPS | — | — |
-| **FP64/FP64 Tensor Core** | — | — | — | 37 TFLOPS | 1.25 TFLOPS |
-| **FP32** | 67 TFLOPS | 67 TFLOPS | 67 TFLOPS | 75 TFLOPS | 75 TFLOPS |
-| **TF32 Tensor Core** | 989 TFLOPS | 989 TFLOPS | 989 TFLOPS | 2,250 TFLOPS | 2,250 TFLOPS |
-| **FP16/BF16 Tensor Core** | 1,979 TFLOPS | 1,979 TFLOPS | 1,979 TFLOPS | 4,500 TFLOPS | 4,500 TFLOPS |
-| **FP8 Tensor Core** | 3,958 TFLOPS | 3,958 TFLOPS | 3,958 TFLOPS | 9,000 TFLOPS | 9,000 TFLOPS |
-| **INT8 Tensor Core** | 3,958 TOPS | 3,958 TOPS | 3,958 TOPS | 9,000 TOPS | 375 TOPS |
-| **FP4 Tensor Core** | — | — | — | 18,000 TFLOPS | 18,000 TFLOPS |
-| **GPU Memory** | 80 GB | 80 GB | 141 GB | 192 GB | 288 GB |
-| **GPU Memory Bandwidth** | 3.35 TB/s | 3.35 TB/s | 4.8 TB/s | 8.0 TB/s | 8.0 TB/s |
-| **[Multi-Instance GPU](https://www.nvidia.com/en-us/technologies/multi-instance-gpu/)** | 最多 7 个 MIG (各 10 GB) | 最多 7 个 MIG (各 10 GB) | 最多 7 个 MIG (各 18 GB) | 最多 7 个 MIG (各 21 GB) | 最多 7 个 MIG (各 32 GB) |
-| **Interconnect** | NVLink: 400 GB/s, PCIe Gen5: 128 GB/s | NVLink: 900 GB/s, PCIe Gen5: 128 GB/s | NVLink: 900 GB/s, PCIe Gen5: 128 GB/s | NVLink: 1.8 TB/s, PCIe Gen5: 128 GB/s | NVLink: 1.8 TB/s, PCIe Gen6: 256 GB/s |
+| **FP64** | 1 TFLOPS | 34 TFLOPS | 34 TFLOPS | **37 TFLOPS** | 1.2 TFLOPS |
+| **FP64 Tensor Core** | 1 TFLOPS | **67 TFLOPS** | **67 TFLOPS** | 37 TFLOPS | 1.2 TFLOPS |
+| **FP32** | 67 TFLOPS | 67 TFLOPS | 67 TFLOPS | **75 TFLOPS** | **75 TFLOPS** |
+| **TF32 Tensor Core** | 989 TFLOPS | 989 TFLOPS | 989 TFLOPS | **2,250 TFLOPS** | **2,250 TFLOPS** |
+| **FP16 Tensor Core** | 1,979 TFLOPS | 1,979 TFLOPS | 1,979 TFLOPS | **4,500 TFLOPS** | **4,500 TFLOPS** |
+| **BF16 Tensor Core** | 1,979 TFLOPS | 1,979 TFLOPS | 1,979 TFLOPS | **4,500 TFLOPS** | **4,500 TFLOPS** |
+| **FP8 Tensor Core** | 3,958 TFLOPS | 3,958 TFLOPS | 3,958 TFLOPS | **9,000 TFLOPS** | **9,000 TFLOPS** |
+| **INT8 Tensor Core** | 3,958 TOPS | 3,958 TOPS | 3,958 TOPS | **9,000 TOPS** | 307 TOPS |
+| **FP4 Tensor Core** | — | — | — | **18,000 TFLOPS** | **18,000 TFLOPS** |
+| **GPU Memory** | 80 GB | 80 GB | 141 GB | 180 GB | **270 GB** |
+| **GPU Memory Bandwidth** | 3.35 TB/s | 3.35 TB/s | 4.8 TB/s | **7.7 TB/s** | **7.7 TB/s** |
+| **[Multi-Instance GPU](https://www.nvidia.com/en-us/technologies/multi-instance-gpu/)** | 7 | 7 | 7 | 7 | 7 |
+| **Interconnect** | NVLink: 400 GB/s, PCIe Gen5: 128 GB/s | NVLink: 900 GB/s, PCIe Gen5: 128 GB/s | NVLink: 900 GB/s, PCIe Gen5: 128 GB/s | **NVLink: 1.8 TB/s**, PCIe Gen5: 128 GB/s | **NVLink: 1.8 TB/s**, **PCIe Gen6: 256 GB/s** |
 
-H800 在算力上与 H100 接近，但 **NVLink 互连带宽被砍到不到一半**（400 vs 900 GB/s）。与 B300 相比差距更为悬殊：**NVLink 带宽差 4.5 倍**（400 GB/s vs 1.8 TB/s），**显存容量差 3.6 倍**（80 vs 288 GB），**显存带宽差 2.4 倍**（3.35 vs 8.0 TB/s），**FP8 和 FP16 Tensor Core 算力差 2.3 倍**。
+H800 在算力上与 H100 接近，但 **NVLink 互连带宽被砍到不到一半**（400 vs 900 GB/s）。与 B300 相比差距更为悬殊：**NVLink 带宽差 4.5 倍**（400 GB/s vs 1.8 TB/s），**显存容量差 3.4 倍**（80 vs 270 GB），**显存带宽差 2.3 倍**（3.35 vs 7.7 TB/s），**FP8 和 FP16 Tensor Core 算力差 2.3 倍**。
 
 <Accordion title="峰值算力单位">
 
@@ -164,6 +164,24 @@ H800/H100/H200 来自各自产品页直接标注。B200 的 8.0 TB/s 来自 [DGX
 **Interconnect（NVLink / PCIe）**
 
 H800 的 NVLink ~400 GB/s 来自原书。H100/H200 的 NVLink 900 GB/s 和 PCIe Gen5: 128 GB/s 来自各自产品页。B200 的 PCIe Gen5 来自 [awesomeagents.ai](https://awesomeagents.ai/hardware/nvidia-b200/) 等第三方汇总。B300 是首款启用 PCIe Gen6 的 GPU（256 GB/s），来自 [Tom's Hardware](https://www.tomshardware.com/pc-components/gpus/nvidia-shares-blackwell-ultras-secrets-nvfp4-boost-detailed-and-pcie-6-0-support) 报道。
+
+</Accordion>
+
+<Accordion title="SXM、HGX、NVL 是什么">
+
+这三个词从不同维度描述了 NVIDIA 数据中心 GPU 的硬件形态和部署方式：`SXM` 讲物理封装，[`HGX`](https://www.nvidia.com/en-us/data-center/hgx/) 讲服务器平台，`NVL` 讲基于 [`NVLink`](https://www.nvidia.com/en-us/data-center/nvlink/) 的互连配置。
+
+**SXM：物理封装形态**
+
+SXM 是 NVIDIA 的高带宽插座式 GPU 模块封装。它不走标准 `PCIe` 插槽，而是把 GPU 直接安装到 `HGX` / `DGX` 底板上。在这类系统里，SXM GPU 通常配合 `NVLink` 和 `NVSwitch` 使用，因此往往有更高的供电、更强的散热，以及更高的 GPU 间互连带宽。
+
+**HGX：服务器主板 / 平台**
+
+HGX 是 NVIDIA 的多 GPU 服务器参考平台。常见的 `HGX H100` / `HGX H200` 底板会集成 8 块 SXM GPU，并通过 `NVSwitch` 把它们全互连。Dell、HPE、浪潮等厂商通常在 HGX 底板之外再配上 CPU、内存和网卡，组装成完整的 AI 服务器。
+
+**NVL：NVLink 互连版本**
+
+NVL 代表 NVLink，**H100 NVL 是把两块 H100 通过 NVLink 桥接焊在同一张 PCIe 大卡上，对外表现为单张卡**。 这样做的好处是：不需要安装专用 HGX 主板就能拿到 NVLink 互连和更大的显存（两张合计 188 GB HBM3），适合快速部署在现有服务器基础设施上，尤其适合 LLM 推理场景。 NVL 版的核心性能接近 SXM，但 NVLink 带宽略低（600 GB/s vs SXM 的 900 GB/s）。
 
 </Accordion>
 
