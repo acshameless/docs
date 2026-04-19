@@ -6,9 +6,9 @@ title: "第一章：介绍与 AI 系统概览"
 
 2024 年底，中国初创公司 DeepSeek 用 2048 块受出口管制限制的 H800 GPU，训练出了 671B 总参数、每个 token 激活 37B 参数的 MoE 模型 [DeepSeek-V3](https://github.com/deepseek-ai/DeepSeek-V3)。根据其[技术报告](https://arxiv.org/abs/2412.19437)，DeepSeek-V3 在语言理解、阅读理解和推理等多项标准化测试上接近甚至部分超过 GPT-4，而完整训练仅需 278.8 万 H800 GPU 小时。假设 H800 的租赁价格为每小时 2 美元，总训练成本仅为 **557.6 万美元**（该数字仅包含正式训练，不含前期架构探索和消融实验）。
 
-随后推出的推理模型 [DeepSeek-R1](https://github.com/deepseek-ai/DeepSeek-R1) 进一步逼近 OpenAI o1 的水平。消息一出，NVIDIA 股价单日跌了约 17%，据 [Reuters 报道](https://www.reuters.com/technology/chinas-deepseek-sets-off-ai-market-rout-2025-01-27/)市值蒸发近 5930 亿美元，创下华尔街单只股票单日最大市值损失纪录。
+随后推出的推理模型 [DeepSeek-R1](https://github.com/deepseek-ai/DeepSeek-R1) 进一步逼近 OpenAI o1 的水平。消息一出，NVIDIA 股价单日跌了约 17%，据 [路透社报道](https://www.reuters.com/technology/chinas-deepseek-sets-off-ai-market-rout-2025-01-27/)市值蒸发近 5930 亿美元，创下华尔街单只股票单日最大市值损失纪录。
 
-作为对比，训练 GPT-4 估计花了约 1 亿美元，训练 Gemini Ultra 估计花了约 1.9 亿美元。在这个规模上，系统效率每提高一点，省下来的就不是小数目。而 DeepSeek 在硬件更受限的条件下，用不到 GPT-4 训练成本 1/10 的预算达到了相近效果，靠的正是硬件、软件和算法的协同设计。
+作为对比，训练 GPT-4 估计花了约 **1 亿**美元，训练 Gemini Ultra 估计花了**约 1.9 亿**美元。在这个规模上，系统效率每提高一点，省下来的就不是小数目。而 DeepSeek 在硬件更受限的条件下，用不到 GPT-4 训练成本 **1/18** 的预算达到了相近效果，靠的正是硬件、软件和算法的协同设计。
 
 本章先从 DeepSeek 在 H800 约束下的模型与系统优化讲起，包括 MoE 架构、DeepSeek-R1 以及 FlashMLA、DeepGEMM、DeepEP、3FS 等工程创新；再把视角扩展到万亿到百万亿参数模型面临的计算与内存瓶颈，以及 GB200、Vera Rubin 等机架式 AI 超级计算机如何提供系统级支撑；最后通过 FlashAttention、MLA 和低精度量化这些例子，说明大模型性能和成本的上限并不只取决于单个算法或单代 GPU，而取决于硬件、软件和算法能否围绕同一组瓶颈协同演进。
 
@@ -522,6 +522,8 @@ Kyber 将首先随 Vera Rubin Ultra 以独立 NVL144 系统的形式推出，为
 - [Inside NVIDIA Blackwell Ultra: The Chip Powering the AI Factory Era](https://developer.nvidia.com/blog/inside-nvidia-blackwell-ultra-the-chip-powering-the-ai-factory-era/)
 
 ### 4. 协同设计（Co-design）
+
+在计算领域，协同设计指的是编写对底层硬件特性有深刻认知的软件。在 AI 背景下，它更具体地意味着让算法、软件与硬件能力协同设计，以最大化性能；FlashAttention、MLA 和低精度量化正是三个典型例子。
 
 #### 4.1 FlashAttention
 
