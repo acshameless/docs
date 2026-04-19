@@ -216,7 +216,13 @@ Exascale 系统指算力达到 $10^{18}$ FLOPS（1 exaFLOPS）的超级计算机
 
 #### 2.2 内存挑战
 
-以 FP16（每参数 2 字节）存储 100 万亿参数，仅模型权重就需要约 **182 TB** 显存。单块 B200 GPU 有 192 GB HBM3e，仅加载模型就需要约 **1,000 块 B200**（约 125 个 8-GPU 节点）。若使用 B300（288 GB），则需约 700 块。这还只是模型权重——不包括激活值内存、优化器状态和输入数据，实际需求更大。
+以 FP16（每参数 2 字节）存储 100 万亿参数，仅模型权重就需要约 **182 TB** 显存。单块 B200 GPU 有 192 GB HBM3e，仅加载模型就需要约 **1,000 块 B200**（约 125 个 8-GPU 节点）。若使用 B300（288 GB），则需约 **700 块**。这还只是模型权重——不包括激活值内存、优化器状态和输入数据，实际需求更大。
+
+<Accordion title="B200 / B300 显存口径说明">
+
+前面规格表里的 B200 / B300 采用的是 `HGX B200` / `HGX B300` 的单 GPU 口径，因此显存写成 180 GB 和 270 GB；这里这句沿用原书引用的 `DGX B200` / `DGX B300` 口径，因此写成 192 GB 和 288 GB。两者对应的是不同系统形态下的规格，所以数字不完全一致。可参考 [Blackwell Ultra Datasheet](https://resources.nvidia.com/en-us-blackwell-architecture/blackwell-ultra-datasheet?ncid=pa-srch-goog-435826) 和 [NVIDIA DGX B300 Datasheet](https://resources.nvidia.com/en-us-dgx-systems/dgx-b300-datasheet?ncid=pa-srch-goog-435826)。
+
+</Accordion>
 
 #### 2.3 MoE 是关键路径
 
