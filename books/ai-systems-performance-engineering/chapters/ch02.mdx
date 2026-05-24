@@ -2,18 +2,738 @@
 title: "第二章：AI 系统硬件概览"
 ---
 
+<Frame caption="From Die to AI Factory">
+  <video controls className="w-full rounded-lg">
+    <source src="/books/ai-systems-performance-engineering/videos/ch02-ai-factory-web.mp4" type="video/mp4"/>
+  </video>
+</Frame>
+
 ## 本章概要
 
-{/* 在此添加本章概要 */}
+本章内容沿 **"单芯片→芯片间→机架内→机架外→数据中心"** 的物理尺度逐层推进。
+
+<Frame caption="NVIDIA DGX GB200 NVL72">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-nvidia-dgx-gb200-nvl72.png" alt="NVIDIA DGX GB200 NVL72" />
+</Frame>
+
+- 单 GPU 芯片内，采用 **NV-HBI** 以 10 TB/s 带宽将双裸片拼接，突破制造工艺、成本限制；
+- 主要 Grace CPU 与 Blackwell GPU 经 **NVLink-C2C** 融合为 Superchip，统一内存架构消解了 CPU-GPU 间的数据拷贝壁垒；
+- 机架内，72 颗 GPU 借 NVLink/NVSwitch 构建起 NVL72 全互联高速域，采用 SHARP 将梯度聚合卸载到交换芯片执行；
+- 机架外，把多柜拼为 SuperPod，使用 InfiniBand 再扩展为万卡级 AI 数据中心。
+
+---
 
 ## 章节详解
 
-{/* 在此添加章节详解 */}
+### 1. Superchip
 
-## 核心要点
+#### 1.1 芯片内：NV-HBI
 
-{/* 在此添加核心要点 */}
+> NVIDIA Blackwell-architecture GPUs pack 208 billion transistors and are manufactured using a custom-built TSMC 4NP process. All NVIDIA Blackwell products feature **two reticle-limited dies** connected by a 10 terabytes per second (TB/s) chip-to-chip interconnect in a unified single GPU.
+>
+> — [NVIDIA Blackwell Architecture](https://www.nvidia.com/en-gb/data-center/technologies/blackwell-architecture/)
+
+NVIDIA 在 Blackwell 架构中首次公开使用 "two reticle-limited dies" 描述 B200 GPU。但过去几十年的经验是"更大 die = 更强 GPU"，那为什么芯片不能继续做大，反而要学 Apple/AMD 玩"胶水"？
+
+结论：**不是不想继续做超大单芯片（monolithic GPU），而是光刻、良率、成本、功耗、互连已经快把它逼到物理极限了。**
+
+<Frame caption="NVIDIA B200">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-nvidia-B200-chipset.jpg" alt="NVIDIA B200" />
+</Frame>
+
+---
+
+**极限 1：光刻的极限**
+
+当前 ASML EUV 的单次曝光场约为：
+
+$$
+26\text{ mm} \times 33\text{ mm} \approx 858\text{ mm}^2
+$$
+
+考虑 seal ring、overlay margin 与 test structure 后，实际可用面积通常低于 850 mm²。GH100（814 mm²）与 GB202（750 mm²）已经逼近这一物理边界。更值得注意的是，High-NA EUV 的有效曝光面积未来可能进一步缩小至约 429 mm²，使超大 monolithic GPU 更不可持续。
+
+**极限 2：Yield 良率问题**
+
+依据经典缺陷模型，die 面积增加会导致良率指数级下降：
+
+$$
+Y = e^{-AD}
+$$
+
+其中 $Y$ 为 yield，$A$ 为 die area，$D$ 为 defect density。
+
+<Callout>
+**参考资料**：
+- 1. [die\_sizes\_of\_nvidia\_gaming\_gpus\_2025](https://www.reddit.com/r/nvidia/comments/1ls4bp8/die_sizes_of_nvidia_gaming_gpus_2025/)
+- 2. [high-na-euv-chipmaking](https://www.tomshardware.com/tech-industry/intel-has-championed-high-na-euv-chipmaking-tools-but-costs-and-other-limitations-could-delay-industry-wide-adoption-report/)
+</Callout>
+
+
+---
+**Silicon Bridge**
+
+随着 Tensor Core、片上 SRAM、HBM PHY 与 NVLink PHY 持续扩张，单 Die GPU 已接近光罩面积与制造良率极限，多 Die/MCM（Multi-Chip Module）成为继续扩展 AI 算力的必然路径。因此，B200 采用 dual-reticle + NV-HBI + CoWoS-L，通过 advanced packaging 横向扩展逻辑面积，从而进一步提升算力。
+
+<Frame caption="NVIDIA Blackwell Ultra GPU 
+Blackwell Ultra GPU 最多包含 160 个 SM 单元和 288GB HBM3E 显存。SM 单元数量和 HBM 显存容量因 SKU 而异。">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-NVIDIA-Blackwell-Ultra-GPU.png" alt="NVIDIA Blackwell Ultra GPU" />
+</Frame>
+
+
+Blackwell GPU 由两颗 reticle-limit compute die 通过 **NV-HBI**（NVIDIA High Bandwidth Interface）互联组成的逻辑统一 GPU，die-to-die 聚合带宽达到 10 TB/s。NV-HBI 具有**超短距、超宽、低功耗**等特点。
+
+---
+
+**与 Apple M1 Ultra 的对比**
+
+Mac Studio 中 Apple M1 Ultra 通过 UltraFusion 封装架构将两颗 M1 Max Die 互联，die-to-die 聚合带宽达到 2.4 TB/s，同样属于高带宽 MCM 架构。  
+值得注意的是，NVIDIA 早在 2017 年 ISCA 上就曾发表过关于 MCM-GPU 的探索性研究。结果显示，优化后的 MCM-GPU 相比单 die 方案最高可提升约 45.5% 性能，相比多 GPU SLI 方案也有约 26.8% 的优势。
+但论文同时指出了一个关键瓶颈：数据局部性问题——必须尽可能将高频访问的数据保持在同一 die 的本地缓存中，否则跨 die 访问带来的带宽与延迟开销会迅速抵消并行带来的收益。
+
+
+<Frame caption="APPLE M1 Ultra">
+  <video controls className="w-full rounded-lg">
+    <source src="/books/ai-systems-performance-engineering/videos/ch02-apple-m1-ultra.mp4" type="video/mp4"/>
+  </video>
+</Frame>
+
+
+但两种设计的本质差异：**Apple 想把"双 Die"隐藏掉，而 NVIDIA 想把"双 Die"利用到极限。**
+
+| | Apple M1 Ultra | NVIDIA B200 |
+|---|---|---|
+| 设计哲学 | 跨 Die 访问尽量像单芯片一样自然 | 尽量减少跨 Die 访问，数据留在本地 Die |
+| die-to-die 带宽 | 2.4 TB/s | 10 TB/s |
+| 架构定性 | 对称统一芯片 | NUMA-aware unified GPU |
+
+Blackwell 在本质上更接近一种 NUMA-aware 的统一 GPU 架构，而不是严格意义上的“完全对称单芯片设计”。
+
+这种架构在 HPC（高性能计算）场景中是可以通过精细调度来发挥优势的：例如矩阵乘法这类计算任务，天然适合被均匀拆分到不同 die 上执行，从而获得良好的并行效率。然而在通用游戏渲染场景中，不仅需要频繁访问几何数据和纹理资源，而且这些资源通常分布在不同 die 上，使得跨 die 的数据依赖无处不在。因此，这种架构在游戏负载下的调度复杂度和通信开销会显著上升。
+
+
+
+---
+
+**先进封装：CoWoS-L**
+
+<Frame caption="CoWoS-L">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-CoWoS-L.jpg" alt="CoWoS-L" />
+</Frame>
+
+Blackwell 采用 TSMC 的 **CoWoS-L**（Chip-on-Wafer-on-Substrate with Local Silicon Interconnect），在 2.5D 硅中介层上通过 LSI（Local Silicon Interconnect）桥接两颗 Die。相比 CoWoS-S（全局硅中介层），CoWoS-L 的局部桥接方案成本更低且能支持更大封装面积。
+
+<Callout>
+**参考资料**：
+- 1. [Apple M1 Ultra 发布](https://www.apple.com.cn/newsroom/2022/03/apple-unveils-m1-ultra-the-worlds-most-powerful-chip-for-a-personal-computer/) 
+- 2. [CoWoS-L/R/S](https://3dfabric.tsmc.com/english/dedicatedFoundry/technology/cowos.htm)
+- 3. [InFO Wafer Level Packaging](https://3dfabric.tsmc.com/english/dedicatedFoundry/technology/InFO.htm)
+- 4. [TSMC 3DFabric for HPC](https://www.tsmc.com/english/dedicatedFoundry/technology/platform_HPC_tech_WLSI)
+- 5. [MCM-GPU 探索性论文（ISCA 2017）](https://research.nvidia.com/publication/2017-06_mcm-gpu-multi-chip-module-gpus-continued-performance-scalability/)
+</Callout>
+
+---
+
+#### 1.2 芯片间：NVLink-C2C
+
+如果说 NV-HBI 解决的是 GPU 内部多 Die 间的高带宽互联问题，那么 **NVLink-C2C**（Chip-to-Chip）解决的则是 CPU–GPU 之间长期存在的互联与内存一致性瓶颈，其核心目标是突破 PCIe 所带来的带宽、延迟与软件模型限制，演进到真正的统一内存架构（Unified Memory Architecture）。
+
+NVLink-C2C 通过超高速、一致性的 die-to-die 互联，将多个逻辑处理芯片封装为一个统一计算节点（Unified Compute Node）。典型产品包括：
+
+- **Grace CPU Superchip**：由两颗 Grace CPU 通过 NVLink-C2C 互联组成；
+- **Grace Hopper Superchip（GH200）**：由 1 颗 Grace CPU 与 1 颗 Hopper GPU 组成；
+- **Grace Blackwell Superchip（GB200/GB300）**：由 1 颗 Grace CPU 与 2 颗 Blackwell GPU 组成。
+
+以 GB200 为例，NVLink-C2C 具有以下关键特性：
+
+| 特性 | 规格 |
+|---|---|
+| 双向聚合带宽 | 900 GB/s（CPU→GPU / GPU→CPU 各 450 GB/s） |
+| 对比 PCIe Gen5 | PCIe 双向仅 128 GB/s，差距约 7× |
+| 一致性协议 | 类 CXL.cache 语义，硬件级 cache coherency |
+| 物理实现 | LSI bridge die，与 NV-HBI 同方案 |
+
+NVLink-C2C 提供 CPU 与 GPU 之间的硬件级 cache coherency（一致性内存语义），使 CPU 可通过 load/store 直接访问 GPU HBM，GPU kernel 亦可直接访问 CPU LPDDR5X 内存，从而避免传统 PCIe + DMA 的显式 memcpy 数据搬运路径。
+
+基于该一致性内存模型，可进一步支持细粒度的内存层级管理策略。
+- 1. 在大模型训练中，将 Adam optimizer 的一阶/二阶状态（m/v states）offload 至 CPU 内存以降低 GPU HBM 占用；
+- 2. 在推理场景中，可将低频访问数据（如 MoE 未激活 expert 参数或冷 KV cache）放置于 CPU 内存，通过按需访问与缓存机制实现容量扩展，但会引入额外延迟与带宽开销。
+
+CXL（Compute Express Link）是建立在 PCIe 物理层之上的开放互连协议。相比于 NVLink-C2C，CXL 更强调跨设备/跨节点的内存扩展与池化能力。二者在目标上互补而非替代：前者优化单节点内 CPU-GPU 一致性计算性能，后者解决数据中心级内存容量与资源利用率问题。
+NVLink-C2C 官方明确支持 CXL协议作为互操作选项。
+
+<Callout>
+**参考资料**：
+- 1. [Vera Rubin Superchip](https://www.tomshardware.com/pc-components/gpus/nvidia-reveals-vera-rubin-superchip-for-the-first-time-incredibly-compact-board-features-88-core-vera-cpu-two-rubin-gpus-and-8-socamm-modules/)
+- 2. [CXLAimPod: CXL Memory is all you need in AI era（arXiv:2508.15980）](https://arxiv.org/abs/2508.15980)
+- 3. [NvLink-C2C](https://www.nvidia.com/en-us/data-center/nvlink-c2c/)
+</Callout>
+
+---
+
+#### 1.3 Grace CPU：为什么是 ARM/LPDDR5X？
+
+Grace CPU Superchip 将两颗 Grace CPU C1 die 封装在一个 CoWoS 基板上，通过 NVLink-C2C 互联，构成 144 颗 ARM Neoverse V2 核心的逻辑 CPU。
+
+<Frame caption="Grace CPU C1">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-nvidia-grace-cpu-c1.jpeg" alt="Grace CPU C1" />
+</Frame>
+
+**为什么是 ARM v9 + Neoverse V2，而不是延续 x86 传统？**
+
+- **每瓦性能**：Grace CPU C1 单颗芯片 CPU+内存功耗仅 250W（Superchip 整模块 500W），而与之对标的双路 x86 服务器功耗接近 900W，差距 1.8×；
+- **SVE2 向量指令集**：Neoverse V2 支持 4×128b SVE2，每条指令可处理 512 位数据，对 CPU 侧 Transformer 算子（softmax、layer norm）有显著本地加速；
+- **IPC 与 x86 持平**：ARM Neoverse V2 每核性能约追平 Ice Lake，但 TDP 约为 x86 同等配置的 50%。
+
+**为什么 Grace 使用 LPDDR5X 而非 DDR5？**
+
+Grace CPU 放弃了数据中心 CPU 惯用的 DDR5，采用 LPDDR5X 内存子系统，拥有 16 通道、最高 960 GB 容量、1 TB/s 带宽。
+
+| 维度 | DDR5 DIMM | LPDDR5X（Grace） |
+|---|---|---|
+| I/O 电压 | 1.1V | 0.5V |
+| 同等带宽功耗 | 基准 | 约 12.5%（节省 ~87.5%） |
+| 封装形式 | DIMM 插槽 | 直接焊接，节省面积 |
+| 最大带宽/模块 | ~102 GB/s | ~512 GB/s（240GB 配置） |
+| 可维修性 | 可插拔更换 | 不可更换 |
+
+- **带宽优先**：DDR5 DIMM 受限于每通道 64 位标准，要实现同等带宽需要极多通道，占用大量 PCB 面积；
+- **功耗敏感**：LPDDR5X 的 I/O 电压仅 0.5V，功耗约为 DDR5 同带宽下的 12.5%；
+- **无 DIMM 插槽**：内存直接焊接在基板上，节省插槽带来的功耗和面积开销，但牺牲了可扩展性和维修便利性。
+
+<Frame caption="Grace CPU Superchip">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-grace-cpu-superchip.jpeg" alt="Grace CPU Superchip" />
+</Frame>
+
+在 Grace+Blackwell Superchip 的统一内存架构中，LPDDR5X 的角色远超"CPU 内存"——它是 GPU 的**第五级内存层级**：
+
+```
+寄存器（线程私有） → 共享内存（同一个 CTA 共享） → L2 → HBM → LPDDR5X
+```
+
+MoE 模型的专家权重、优化器状态、checkpoint 数据都可以存放在 LPDDR5X 中，通过 NVLink-C2C 被 GPU 直接访问。
+
+**Grace CPU 规格对比**
+
+| 规格 | Grace CPU C1 | Grace CPU Superchip |
+|---|---|---|
+| 核心数 | 72 Arm Neoverse V2（4×128b SVE2） | 144 Arm Neoverse V2（4×128b SVE2） |
+| L1 cache | 64KB i-cache + 64KB d-cache | 64KB i-cache + 64KB d-cache |
+| L2 cache | 1MB/core | 1MB/core |
+| L3 cache | 114MB | 228MB |
+| 主频 | 3.1 GHz（全核 SIMD 3.0 GHz） | 3.1 GHz（全核 SIMD 3.0 GHz） |
+| LPDDR5X 容量 | 120 / 240 / 480 GB | 240 / 480 / 960 GB |
+| 内存带宽 | 最高 512 GB/s（120/240GB）/ 384 GB/s（480GB） | 最高 1024 GB/s（240/480GB）/ 768 GB/s（960GB） |
+| NVLink-C2C 带宽 | — | 900 GB/s |
+| PCIe | 最多 4× PCIe Gen5 x16 | 最多 8× PCIe Gen5 x16 |
+| CPU + 内存功耗 | 最高 250W TDP | 最高 500W TDP |
+
+<Callout>
+**参考资料**：
+- 1. [NVIDIA Grace CPU Superchip Datasheet](https://resources.nvidia.com/en-us-grace-cpu/data-center-datasheet?ncid=no-ncid&xs=1123791s)
+</Callout>
+
+---
+
+#### 1.4 Tensor Core 
+
+NVIDIA Tensor Core 的演进始终在解决两个核心问题：
+
+1. **如何让矩阵乘法更快**
+2. **如何让数据搬运更少**
+
+
+<Frame caption="NVIDIA Blackwell Streaming Multiprocessors Architecture">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-SM.png" alt="NVIDIA Blackwell Streaming Multiprocessors Architecture" />
+</Frame>
+
+Blackwell Ultra 的核心是其 160 个流式多处理器 (SM)，在完整的 GPU 实现中，这些 SM 被组织成 8 个图形处理集群 (GPC)。如图 2 所示，每个 SM 都是一个独立的计算引擎，包含：
+
+- 128 个 CUDA 核心，用于 FP32 和 INT32 操作，以及 FP16/BF16 和其他精度。
+- 4 个第五代 Tensor Core，配备 NVIDIA 第二代 Transformer Engine，针对 FP8、FP6 和 NVFP4 进行了优化。
+- 256 KB 张量内存 (TMEM)用于线程束同步存储中间结果，从而实现更高的重用率和减少片外内存流量。
+- 用于人工智能内核的超越数学和特殊运算的特殊功能单元 (SFU) 。
+
+
+
+
+<Callout>
+**参考资料**：
+- 1. [inside-nvidia-blackwell-ultra-the-chip-powering-the-ai-factory-era](https://developer.nvidia.com/blog/inside-nvidia-blackwell-ultra-the-chip-powering-the-ai-factory-era/) 
+- 2. [NVIDIA Hopper Architecture In-Depth](https://developer.nvidia.com/blog/nvidia-hopper-architecture-in-depth/)
+</Callout>
+
+---
+
+#### 1.5 SM、Warp 与线程层次
+
+```
+thread（1个线程）
+  → warp（32线程）
+    → warpgroup（通常 4 个 warp = 128线程）
+      → CTA / thread block（一个任务块，几十到几百 warp）
+```
+
+**SM 与 Warp 调度**
+
+现代 NVIDIA GPU 的 SM（Streaming Multiprocessor）内部包含多个处理分区（processing partition），每个分区拥有独立的：
+- warp scheduler
+- register file slice
+- execution pipeline
+
+GPU 以 warp（32 threads）为基本调度单位：
+- 多个 warp → 一个 CTA/thread block
+- 多个 CTA → 一个 grid
+
+**为什么需要大量 Warp？**
+HBM 的访问延迟通常高达数百 cycles（约 300–800 cycles），当某个 warp 发起 HBM load 后：该 warp 会暂停等待数据返回，SM scheduler 会立即切换到其他 ready warp。
+
+
+
+**延迟隐藏：为什么需要足够多的 Warp？**
+
+HBM 访问延迟约 **400 cycles**，这意味着一个等待 HBM 返回的 warp 需要其他 warp 在此期间持续执行。GPU 通过“warp 切换”来隐藏 memory latency。
+所需最小 warp 数理论下界：
+
+$$
+\text{min\_warps} = \frac{\text{memory\_latency}}{\text{instruction\_issue\_interval}} \approx \frac{400}{4} = 100 \text{ warps/SM}
+$$
+
+Blackwell 每 SM 最多支持 **64 warps**（2048 threads），因此即使 100% occupancy，也只能隐藏 ~256 cycles 的 HBM 延迟，仍存在约 36% 的 MEM stall rate。这是 HBM-bound kernel 的根本限制，也是 TMEM 设计的核心动机。
+
+---
+
+### 2. Memory
+
+#### 2.1 HBM 技术演进与物理实现
+
+传统 GDDR5/6 架构已难以继续通过提升频率与扩展 PCB 位宽获得线性带宽增长，主要受限于信号完整性、功耗以及布线复杂度。2015 年，AMD Radeon R9 Fury X 推动 HBM1 首次在商用 GPU 中落地，将 HBM DRAM 与 GPU die 通过 silicon interposer 进行 2.5D 集成。随后 NVIDIA Tesla P100（2016）引入 HBM2，并在 TSMC CoWoS 封装工艺上实现 GPU 与 HBM stack 的高带宽互连。
+
+HBM 的关键制造技术是 **TSV（Through-Silicon Via）**，在 DRAM die 内部形成垂直导电通道，使多层 DRAM die 能够垂直堆叠并实现高密度互连。深宽比从早期约 1:5–1:10 提升至 HBM3/3E 时代约 1:10–1:20。
+
+<Frame caption="SK Hynix HBM">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-skhynix-hbm.jpg" alt="SK hynix HBM" />
+</Frame>
+
+**HBM3e（B200 规格）**
+
+| 规格 | 数值 |
+|---|---|
+| 堆叠层数 | 8/12-Hi（8/12 层 DRAM die） |
+| 每 stack 容量 | 24/36 GB（每层 3 GB） |
+| 数据速率 | 9.6 Gbps/pin |
+| 总线宽度 | 1024-bit |
+| 每 stack 带宽 | 1.2 TB/s |
+| B200 配置 | 8 stack，共 192 GB，~8 TB/s 聚合带宽 |
+
+**HBM 三重性能瓶颈**
+
+1. **CA Bus 仲裁争用**：每个 HBM channel 的 CA（Command/Address）总线是共享资源，多流并发访问时仲裁冲突会降低有效带宽。
+
+2. **Row Buffer Locality**：DRAM 访问遵循 open-page 策略，对于 MoE expert routing 等随机稀疏访问模式，row miss 率高。
+
+3. **温度敏感性**：HBM3e 在 junction temperature 上升一定数值，PHY 会自动降低数据速率（通常触发 2× 降速）。NVIDIA IMC（Intelligent Memory Controller）实现了温度感知的带宽调度。
+
+**HBM4 预期规格**
+
+| 规格 | HBM3e | HBM4 |
+|---|---|---|
+| 总线宽度 | 1024-bit | 2048-bit（带宽 ×2） |
+| 通道数 | 16 | 32（64 pseudo-channel） |
+| 每 stack 带宽 | ~1.2 TB/s | >2 TB/s |
+| 堆叠层数 | 12-Hi | 16-Hi |
+| 每 stack 容量 | 24 GB | 64 GB |
+| 核心电压 | 1.1V | 1.05V |
+| 兼容性 | — | 与 HBM3e 不兼容，需新 PHY |
+
+**近存计算（Processing-In-Memory）**
+
+HBM-PIM（如 Samsung Aquabolt、SK Hynix AiMX）在 Base Die 集成了向量 MAC 单元，可在 DRAM 内部执行简单的矩阵-向量乘。HBM4 时代将在 base die 上集成更丰富的定制 IP 逻辑，允许用户在内存中直接执行部分计算。当前主要障碍在于编程模型（需要专用 intrinsic）尚未融入主流框架。
+
+<Callout>
+**参考资料**：
+- 1. [HBM（High Bandwidth Memory）DRAM Technology and Architecture](https://ieeexplore.ieee.org/document/7939084)
+- 2. [SK Hynix HBM4](https://product.skhynix.com/products/dram/hbm/hbm4.go)
+</Callout>
+
+---
+
+#### 2.2 HBF
+随着 AI 模型参数量走向数十万亿级别，现有的 HBM 容量已经快装不下完整的模型权重了，频繁从外部搬运数据会导致严重的“存储墙”瓶颈。
+
+<Frame caption="HBF">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-HBF.png" alt="HBF" />
+</Frame>
+
+
+HBF（High Bandwidth Flash）是 SK Hynix 与 SanDisk 联合推动全球标准化的新型存储层级，定位于 HBM 与 SSD 之间，HBF 作为介于两者之间的新型存储阶层，在传统架构中与 HBM 深度协同——HBM 负责最高带宽，HBF 负责提供近 HBM 量级的带宽与更大容量。
+
+HBF 不仅可提升 AI 系统的扩展能力，还能有效降低总体拥有成本（TCO）。
+
+
+<Frame caption="HBM vs HBF">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-HBMvsHBF.png" alt="HBM vs HBF" />
+</Frame>
+
+<Callout>
+**参考资料**：
+- 1. [SK Hynix & SanDisk：HBF 全球标准化](https://news.skhynix.com.cn/sk-hynix-and-sandisk-begin-global-standardization-ofnext-generation-memory-hbf/)
+- 2. [Scaling the Memory Wall: Behind Sandisk’s High Bandwidth Flash for AI Inferencing](https://www.sandisk.com/company/newsroom/blogs/2025/scaling-beyond-the-wall-inside-sandisks-high-bandwidth-flash-for-ai)
+- 3. [THE FUTURE OF MEMORY ARCHITECTURE FOR AI INTRODUCING](https://documents.sandisk.com/content/dam/asset-library/en_us/assets/public/sandisk/collateral/company/Sandisk-HBF-Fact-Sheet.pdf)
+</Callout>
+
+---
+
+#### 2.3 SRAM(NVIDIA Groq 3 LPX)
+<Frame caption="lpx decode phase">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-lpx decode phase.png" alt="lpx decode phase" />
+</Frame>
+
+NVIDIA Dynamo通过协调跨异构后端的解耦服务和解耦解码（Attention 和 FFN 解耦（AFD 架构）），Rubin GPU：负责高吞吐（prefill / attention / 长上下文），Groq 3 LPX（LPU）：负责极低延迟 decode（FFN / MoE / token-by-token）。
+在解码过程中，Dynamo 会协调 AFD 循环，其中 GPU 对累积的键值缓存执行注意力机制，中间激活信息被移交给 LPU 执行 FFN/MoE，输出返回给 GPU 继续生成令牌。
+
+
+<Frame caption="NVIDIA Groq 3 LPU Chip Architecture">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-lpx-chip-architecture.png" alt="NVIDIA Groq 3 LPU Chip Architecture" />
+</Frame>
+
+- 确定性（Deterministic）：通过编译期静态调度替代运行时动态调度，使每个 token 的执行路径固定，从而消除延迟抖动。
+- 近存计算（SRAM-based compute）：将关键计算与数据直接放在片上 SRAM 中执行，避免 HBM/缓存层级访问带来的高延迟与不确定性。
+- 任务拆分（GPU + LPU disaggregation）：把推理流程拆成不同硬件专责执行（GPU负责attention，LPU负责FFN/解码），减少单芯片资源竞争并提升整体流水线效率。
+
+<Frame caption="NVIDIA Groq 3 LPX">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-lpx.png" alt="NVIDIA Groq 3 LPX" />
+</Frame>
+
+<Frame caption="NVIDIA Groq 3 LPX">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-Groq 3 LPX.png" alt="NVIDIA Groq 3 LPX" />
+</Frame>
+
+
+
+<Callout>
+**参考资料**：
+- 1. [存算分离 vs 存算一体](https://www.shxcj.com/archives/3907) 
+- 2. [Inside NVIDIA Groq 3 LPX](https://developer.nvidia.com/blog/inside-nvidia-groq-3-lpx-the-low-latency-inference-accelerator-for-the-nvidia-vera-rubin-platform/)
+- 3. [Groq LPU架构详解](https://mp.weixin.qq.com/s/xweB6Zej84Iz2fUkSchwMA)
+- 4. [详细谈谈Rubin + Groq 3 LPU架构](https://mp.weixin.qq.com/s/lTOOjnCWj5nVGFq68qcNgQ)
+- 5. [谈谈Feynman+LPU的架构](https://mp.weixin.qq.com/s/5d-RZOZd5E-lJjf17CfKDw)
+</Callout>
+
+---
+
+### 3. Networking
+
+#### 3.1 NVL72 物理架构与机架内全互联
+
+| 组件 | 数量 / 规格 |
+|---|---|
+| GB200 Superchip | 36 个（每 Superchip = 1 Grace CPU + 2 Blackwell GPU） |
+| Blackwell GPU | 72 颗 |
+| ARM 核心 | 2592 颗 |
+| HBM Memory | 13.5 TB（192 GB × 72） |
+| LPDDR Memory | 17 TB（36 × 480 GB） |
+| NVSwitch 3.0 | 9 个（~50B 晶体管，72 端口，TSMC 4NP） |
+| NVLink 电缆 | 5000 根，总长 ~3 km |
+| 机架功耗 | 130 kW，液冷，进水 45°C |
+
+
+**GPU-as-memory**：任何 GPU 都可以直接访问其他 GPU 的 HBM，就好像访问本地内存一样，NVLink 5.0 每 GPU 双向带宽 1.8 TB/s。
+
+**无 Retimer 设计**：机架内物理距离 < 3m，采用**无源铜缆 + 无 Retimer** 方案。Retimer 引入 ~5–10 ns 额外延迟，对于 ~1 μs 级 All-Reduce 不可忽略；无 Retimer 同时降低每端口约 2W 功耗。PAM4 信号对走线长度匹配极为敏感：**1 mm 的长度差异**在 112 Gbps PAM4 下引入约 10 ps 的 UI 偏移，超过 PAM4 接收机的 timing margin，NVL72 背板需要精确蛇形走线等长。
+
+---
+
+#### 3.2 SHARP 网内计算
+
+**All-Reduce 通信模式演进**
+
+传统 **Ring All-Reduce**（Baidu/Horovod，2017）：N 个节点排成逻辑环，2 轮通信（Scatter-Reduce + All-Gather），每节点通信量 $2 \cdot \frac{N-1}{N} \cdot M$，带宽效率接近 1，但延迟正比于 N。
+
+**SHARP v3**（Scalable Hierarchical Aggregation and Reduction Protocol）将 reduction 操作卸载到 NVSwitch 的 ALU 中执行：
+
+- 数据从各 GPU 发送至 NVSwitch，**在交换芯片内聚合后一次性广播**，单次 pass 完成 All-Reduce；
+- 带宽效率接近理论极限 **1×**（每条链路只流通数据一次）；
+- 大 tensor（>1 MB）场景下 All-Reduce 加速 **30–50%**。
+
+通过在交换机 ASIC 内部对数据进行分层聚合，减少 GPU 与 NIC 之间的流量，从而降低 collective communication 的网络开销，在大规模训练中可显著提升 All-Reduce / ReduceScatter 性能。
+
+**SHARP v3 限制**：
+- 最多同时支持 **256 个 reduce group**；
+- 仅支持 FP8/FP16/FP32 的 element-wise 加减，不支持 max/min 等复杂 reduce；
+- 小 tensor 因 header overhead 收益递减。
+
+NCCL 2.18+ 自动检测 NVSwitch 上的 SHARP 能力，通过 `NCCL_ALGO=NVLS_TREE` 环境变量启用。NCCL 2.27 将支持范围扩展到 InfiniBand 结构，并新增 AllGather 和 ReduceScatter 的网内卸载支持。
+
+
+
+<Callout>
+**参考资料**：
+- 1. [Scalable Hierarchical Aggregation Protocol（SHARP）: A Hardware Algorithm for Efficient Data Reduction in High-Speed Networks](https://network.nvidia.com/sites/default/files/related-docs/solutions/hpc/paperieee_copyright.pdf)
+</Callout>
+
+---
+
+#### 3.3 并行策略的物理映射
+
+**NVLink vs InfiniBand 带宽鸿沟**
+
+```
+NVL72 内 NVLink:  1800 GB/s（双向，any-to-any）
+跨机架 IB NDR:    400 Gbps = 50 GB/s（单端口）
+带宽差距：约 36×
+```
+
+这个 36× 的数字直接决定了并行策略的最优物理映射：
+
+**张量并行（TP）**：每个 transformer layer 的 forward pass 需要 2 次 All-Reduce（attention 后 + FFN 后）。TP=72 在 NVL72 内，All-Reduce 延迟极低~5–20 μs，支持频繁 all-reduce。
+
+**流水线并行（PP）**：跨机架通信量 = activation size（对于 GPT-3 175B，batch=1，seq=2048，BF16 约 ~50 MB），适合跨机架部署。PP bubble 比例 = $(m-1)/(m+p-1)$，m = microbatch 数，p = pipeline depth。
+
+**专家并行（EP，MoE）**：All-to-All 通信量 = tokens × K × hidden\_dim × bytes，当 tokens 较多时通信量极大。DeepSeek-V3 的"Expert Placement Optimization"将高频共现的 expert 尽量放在同一 NVL72 内，减少跨机架 EP 流量。
+
+
+<Callout>
+**参考资料**：
+- 1. [Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM](http://arxiv.org/abs/2104.04473)
+- 2. [ZeRO++（arXiv:2306.10209）](https://arxiv.org/abs/2306.10209) 
+</Callout>
+
+---
+
+#### 3.4 机架外 InfiniBand 与 RDMA
+
+**InfiniBand 规格演进**
+
+| 标准 | 端口速率 | MPI 延迟 |
+|---|---|---|
+| HDR（2019） | 200 Gbps | ~0.6 μs |
+| NDR（2022） | 400 Gbps | ~0.5 μs |
+| XDR（2025） | 800 Gbps | ~0.4 μs |
+
+- **Fat-Tree 拓扑**：AI 数据中心中广泛采用的标准拓扑之一（3-stage Clos / Fat-tree / Leaf-Spine-Leaf / Edge-Aggregation-Core）。对于基于 K 端口交换机的 3-stage 无阻塞 Fat-Tree，网络支持的服务器总数为 K³/4（K 需为偶数）。例如，K = 48 时可支撑 27,648 台服务器，远超万卡规模需求。
+- **GPUDirect RDMA**：一种直接内存访问技术：NIC 通过 PCIe 基址寄存器（BAR）直接对 GPU HBM 执行 DMA 读写，完整绕过 CPU 和系统内存。
+
+**RoCEv2 vs InfiniBand**
+
+| 维度 | InfiniBand NDR | RoCEv2 |
+|---|---|---|
+| 延迟 | ~0.5 μs | ~2–5 μs |
+| 成本 | 高（专用 HCA、交换机） | 低（标准以太网） |
+| 无损保障 | 天然无丢包 | 需 PFC + ECN 配置 |
+| 配置复杂度 | 中等 | 高（PFC deadlock 风险） |
+| 万卡可扩展性 | 成熟 | 仍有争议 |
+
+<Callout>
+**参考资料**：
+- 1. [Congestion Control for Large-Scale RDMA Deployments](https://dl.acm.org/doi/abs/10.1145/2829988.2787484)
+- 2. [RDMA over Commodity Ethernet at Scale](https://dl.acm.org/doi/10.1145/2934872.2934908)
+</Callout>
+
+---
+
+#### 3.5 Scale-Up vs Scale-Out 与业界万卡实践
+
+**两个通信域的根本差异**
+
+| 维度 | Scale-Up（NVLink） | Scale-Out（InfiniBand） |
+|---|---|---|
+| 最大规模 | 72 GPU（NVL72） | 10000+ GPU |
+| 双向带宽 | 1.8 TB/s | ~100 GB/s（聚合） |
+| 延迟 | ~1 μs | ~3 μs |
+| 协议 | NVLink 私有 | RDMA Verbs |
+| 物理媒介 | 铜缆（短距） | 铜缆 / 光纤（中长距） |
+
+TP 必须在 NVLink 域内，PP 和 EP 可容忍 Scale-Out 带宽。这是训练并行策略设计的第一约束。
+
+**业界万卡实践**
+传统云计算（VPC 网络）与 LLM 训练网络的流量模型完全不同。VPC 网络通常存在数万到数十万条并发连接（C10K、C100K甚至C1000K），每个 flow 都是连续的小流，带宽利用率较低（一般低于 NIC 容量的 20%），整体流量模式平稳，通常以小时级缓慢变化；
+而 LLM Training 则只有几十到几百条 flow，但这些 flow 会周期性同步爆发，在 AllReduce 等阶段瞬间打满 400Gbps NIC 带宽，呈现典型的“低熵（low entropy）+ 高突发（bursty elephant flow）”特征。
+这种模式会导致传统数据中心广泛使用的 ECMP 出现 hash polarization，产生严重负载不均，因此传统 Clos/FatTree 网络已经无法直接适配 AI 训练场景。
+
+
+<Frame caption="Ali HPN">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-HPN.png" alt="HPN" />
+</Frame>
+
+
+
+Alibaba HPN（High Performance Network）就是针对这种 AI Training 流量模型设计的新型 Ethernet AI Fabric。HPN 采用 Dual-TOR、Rail-Optimized、Dual-Plane 的两层网络架构，通过减少 ECMP 冲突、限制路径搜索空间以及进行显式路径控制（RePaC），来提升大象流承载能力和训练稳定性。
+
+**阿里云 HPN**：基于 51.2T 单芯片以太网交换机的"双上联+多轨+双平面"架构，配 Solar-RDMA 自研协议和 ACCL 集合通信库，实现单层千卡、两层万卡的高稳定性互联；实测多网卡 All-Reduce 带宽较单 rail 提升约 2×。
+
+**字节跳动 MegaScale**（NSDI 2024）：双 ToR 交换机设计消除单点故障；Flow-level ECMP 减少乱序引起的 RDMA 性能退化；GPU 心跳机制 1 秒内检测 GPU failure 并触发 checkpoint 恢复。
+
+**Meta RSC**：AI 训练网络与存储网络物理分离，避免存储 I/O 对训练通信的带宽争抢；RoCEv2 + DCQCN 规避 IB 专有协议栈成本；Lustre 并行文件系统聚合数据加载带宽 ~2 TB/s。
+
+<Callout>
+**参考资料**：
+- 1. [MegaScale: Scaling Large Language Model Training to More Than 10,000 GPUs](https://arxiv.org/pdf/2402.15627)
+- 2. [Software-Hardware Co-Design for Fast and Scalable Training of Deep Learning Recommendation Models](https://arxiv.org/pdf/2104.05158)
+- 3. [Alibaba HPN: A Data Center Network for Large Language Model](https://ennanzhai.github.io/pub/sigcomm24-hpn.pdf)
+</Callout>
+
+---
+
+### 4. Others
+
+#### 4.1 Power & Cooling
+
+GB200 NVL72 Rack Power Breakdown
+
+| Component | Power |
+|---|---:|
+| 18× Compute Nodes (72 GPU + 36 CPU) | ~110 kW |
+| NVSwitch Fabric | ~5–8 kW |
+| Network Switches / NICs | ~3–5 kW |
+| Cooling (fans + pumps) | ~4–6 kW |
+| PSU / Power Conversion Loss | ~3–5 kW |
+| **Total Rack Power** | **~130 kW** |
+
+
+
+**液冷系统**：冷板（cold plate）贴合 GPU 和 CPU die，去离子水（加添加剂防腐蚀）通过 manifold 分配到各节点，CDU（Cooling Distribution Unit）负责循环和热交换。进水温度 45°C，出水温度约 60°C，流量 ~10–20 L/min。
+下一代 NVL576（Vera Rubin 平台，~600 kW/rack）超出传统液冷极限，需采用**双相浸没液冷**。
+
+
+**PUE 对比**：高密度 AI 数据中心中，传统风冷 PUE 通常约为 **1.4–1.6**，而 direct-to-chip 液冷可降至 **1.1–1.3**。
+
+
+[PUE](https://en.wikipedia.org/wiki/Power_usage_effectiveness): 是一个比率（计算机数据中心设施使用的能源总量与输送给计算设备的能源之比）。通俗理解是指计算设备使用了多少能源。一个理想的PUE是1.0，可以理解成照明、制冷等完全不需要用电，只有计算设备需要用电。
+
+
+
+$$
+\mathrm{PUE}
+=
+\frac{\mathrm{Total\ Facility\ Energy}}
+{\mathrm{IT\ Equipment\ Energy}}
+=
+1+
+\frac{\mathrm{Non\ IT\ Facility\ Energy}}
+{\mathrm{IT\ Equipment\ Energy}}
+$$
+
+NVIDIA 官方没有直接公开“整柜额定功耗”，但行业里现在普遍按 GB200 NVL72 ≈ 120–140 kW / rack，规划设计一般按 130kW 规划。PUE = 1.2（现在 AI DC 很常见），1GW（PUE 1.2）≈ 6400 个 GB200 NVL72 rack， 对应 6400×72≈460,000 张 GPU 显卡。
+
+| PUE | 1GW 可用于 IT 的功率 | NVL72 数量（130kW/rack） | GPU 总数（72 GPU/rack） |
+| --- | ------------------: | -----------------------: | ----------------------: |
+| 1.1 |              909 MW |                   ~6990 |                ~503,280 |
+| 1.2 |              833 MW |                   ~6400 |                ~460,800 |
+| 1.3 |              769 MW |                   ~5910 |                ~425,520 |
+| 1.5 |              667 MW |                   ~5130 |                ~369,360 |
+
+
+**电源演进**：未来 **800V DC** 数据中心将进一步减少 AC/DC 转换级数，PDU 效率从 ~94% 提升至 ~98%。
+
+
+
+---
+
+#### 4.2 GPU 虚拟化与共享机制
+
+NVIDIA GPU 提供三种硬件/软件共享机制：
+
+**MIG（Multi-Instance GPU）：硬件级物理隔离**
+
+MIG 在硬件层面将一个 GPU 分割为最多 7 个独立实例，每个实例拥有独占的 SM 分区、L2 cache 分区、HBM 地址空间（SMMU 隔离）和 NVLink/PCIe 带宽配额。B200 支持 2×7 = **14 个 MIG 实例**（通过双 die 物理分割）。
+
+适合多租户推理平台，从根本上消除 GPU L2 cache 侧信道攻击面（USENIX Security 2021 已证明可行）。
+
+**MPS（Multi-Process Service）：上下文合并**
+
+将多个进程的 CUDA Context 合并到单一硬件 Context 执行，多进程 kernel 可真正并发运行（SM 级别交织），消除 context switch 开销（传统切换 ~数十 μs）。代价：一个进程的 CUDA error 会导致整个 MPS 服务崩溃，隔离性差。适合推理服务场景（进程间信任，对隔离性要求低）。
+
+理论上 MIG 和 MPS 可在同一 GPU 上组合使用（MPS 部署在 MIG 实例内），实现多层次资源池化。
+
+**Time-Slicing：软件级时间片**
+
+在同一 GPU 上虚拟出 N 个设备，通过 CUDA SM 时间片轮转调度。本质是软件模拟的多 GPU，无性能隔离：一个进程的 kernel 超出时间片会延迟其他进程，P99 延迟抖动大。仅适合开发测试，不适合 SLA 敏感的生产推理。
+
+| 机制 | 隔离级别 | 适用场景 |
+|---|---|---|
+| MIG | 硬件物理隔离 | 多租户生产推理，有 QoS/安全需求 |
+| MPS | 软件上下文合并 | 单一模型多请求并发推理 |
+| Time-Slicing | 无隔离，时间片轮转 | 开发测试、低并发场景 |
+
+---
+
+#### 4.3 Co-Packaged Optics（CPO）与光学互联
+
+<Frame caption="光模块">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-光模块.png" alt="光模块" />
+</Frame>
+
+**传统可插拔光模块的瓶颈**
+
+当前机架间互联采用 QSFP-DD/OSFP 可插拔光模块（800G/1.6T），电-光-电转换位于模块内部：
+
+```
+交换芯片 SerDes → PCB 走线（电）→ 模块 TOSA/ROSA（光电转换）→ 光纤
+```
+
+高频电信号在 PCB、连接器与背板中的插入损耗迅速上升。即便交换芯片与光模块之间仅有数厘米到十几厘米的走线，链路损耗也可能超过 20 dB，需要更复杂的 DSP、Retimer 与均衡电路来维持信号完整性。
+
+因此，数据中心网络的功耗瓶颈，正在从交换 ASIC 本身，逐渐转向 SerDes、Retimer 与光模块侧的电-光接口。当前 800G/1.6T 光模块单端口功耗通常已达到 ~10–20W，一个 512 端口级别的 AI 核心交换系统，仅光模块功耗就可能超过 5–10 kW。
+
+传统铜互连在超高带宽下还面临：
+
+- 传输距离受限
+- 高频损耗快速增加
+- PCB 与连接器设计复杂度激增
+- SerDes 功耗持续上升
+
+这也是 Co-Packaged Optics（CPO）兴起的重要原因。
+
+<Frame caption="CPO">
+  <video controls className="w-full rounded-lg">
+    <source src="/books/ai-systems-performance-engineering/videos/ch02-cpo.mp4" type="video/mp4"/>
+  </video>
+</Frame>
+
+CPO 将光引擎（Photonics Engine）直接封装在交换/GPU 芯片旁边，缩短电互联距离至**毫米级**，从而降低插入损耗、Retimer 数量与整体系统功耗。硅光子（Silicon Photonics）在标准 CMOS 工艺（TSMC 45nm SOI）上制造光波导、Mach-Zehnder 调制器（MZM）、Ge 光探测器。TSMC COUPE 平台将硅光子 die 和 CMOS 数字 die 共封装，实现片内光互联。
+
+NVIDIA 在 GTC 2025 发布了 **Quantum-X（1.6T）** 硅光子交换机，将光学元件直接集成到 Switch ASIC 封装内。
+
+类似思路也正在扩展到 GPU 互连。未来的 OIO（Optical I/O）架构，可能将 GPU 与光引擎直接封装在一起，使 GPU 间通信从传统 NVLink 铜互连逐步演进为光互连，以突破带宽密度、距离与功耗限制（想象空间很大，甚至有可能会有全光网络出现）。
+
+
+<Callout>
+**参考资料**：
+- 1. [Roadmapping the Next Generation of Silicon Photonics](https://arxiv.org/abs/2305.15820)
+- 2. [Nahmias et al., "Photonic Multiply-Accumulate Operations for Neural Inference](https://ieeexplore.ieee.org/document/8844098)
+</Callout>
+
+<Frame caption="Silicon Photonics Roadmap">
+  <img src="/books/ai-systems-performance-engineering/images/ch02-Silicon Photonics Roadmap.jpg" alt="Silicon Photonics Roadmap" />
+</Frame>
+
+---
+
+## 总结：从单芯片到数据中心的系统思维
+
+| 层级 | 互联技术 | 带宽 | 延迟 | 决定因素 |
+|---|---|---|---|---|
+| 单芯片内 | 寄存器 / TMEM / SRAM 层次 | 10–100 TB/s | 1–400 cycles | kernel 优化策略（算法数据局部性） |
+| 芯片间（Superchip） | NVLink-C2C | 900 GB/s | ~300 ns | CPU-GPU 统一内存可行性 |
+| 机架内（NVL72） | NVLink / NVSwitch | 1.8 TB/s | ~1 μs | Tensor Parallel 最大有效粒度（TP=72） |
+| 机架间 | InfiniBand NDR/XDR | ~100 GB/s | ~3 μs | Pipeline / Expert Parallel 通信可行性 |
+| 数据中心（万卡） | Fat-Tree + 多轨网络 | 聚合 PB/s | — | 超大规模训练推理的工程可行性 |
+
+理解这条**物理约束链**，是设计高效 AI 系统的根本认知基础。带宽层次与延迟层次的物理决定论，最终驱动了 MoE 稀疏架构、FP4 量化、SHARP 网内计算、以及层次化并行策略的兴起。
+
+---
 
 ## FAQ
 
-{/* 在此添加常见问题 */}
+<Accordion title="为什么 HBM 延迟比 GDDR 高？">
+HBM 物理上通过 TSV 堆叠 DRAM die，虽然物理距离短，但每层 die 之间的信号需要通过 micro-bump 和 TSV 传输，每 pass 都有额外延迟。更关键的是，HBM 的 bank 结构和 row buffer 访问模式决定了随机访问时的平均延迟（约 400 周期）高于 GDDR（约 250 周期）。但 HBM 的优势在于 1024 位接口带来的超高聚合带宽，因此被优先用于吞吐优先而非延迟优先的 AI 训练场景。
+</Accordion>
+
+<Accordion title="为什么 Grace 使用 LPDDR5X 而非 DDR5？">
+带宽、功耗、容量的三角权衡。LPDDR5X 以焊接方式实现了 16 通道宽内存总线，同样带宽下功耗仅为 DDR5 的八分之一。在 130 kW 的机架功率预算下，节省的数十瓦 CPU 内存功耗可以转化为更多 GPU 的 TDP。代价是内存不可插拔更换，但数据中心场景中固定配置可接受。
+</Accordion>
+
+<Accordion title="NVLink 和 InfiniBand 如何协同工作？">
+NVLink 负责 Scale-Up 域内扩展（机架内 72 GPU 全互联，1.8 TB/s 带宽，~1 μs 延迟）。InfiniBand 负责 Scale-Out 域间扩展（跨机架连接，100 GB/s 带宽，~3 μs 延迟）。两者在软件栈（NCCL）中统一抽象，开发者无需手动区分——但理解物理拓扑是设计最优并行策略的前提。
+</Accordion>
