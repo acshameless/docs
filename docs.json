@@ -95,6 +95,7 @@
             "pages": [
               "resources/llm-foundations",
               "resources/training",
+              "resources/rl",
               "resources/inference",
               "resources/rag",
               "resources/gpu-programming",
@@ -113,6 +114,18 @@
               "projects/inference",
               "projects/agents",
               "projects/cluster-infrastructure"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "面试题",
+        "groups": [
+          {
+            "group": "主题分类",
+            "pages": [
+              "interview/inference",
+              "interview/intelligent-routing"
             ]
           }
         ]

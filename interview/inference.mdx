@@ -1,0 +1,74 @@
+---
+title: "推理"
+description: "LLM Serving、模型量化和 KV Cache 面试题"
+---
+
+## KV Cache 与数值精度
+
+同一模型采用不同权重精度或 KV Cache 精度时，KV Cache 的显存占用、容量、性能和精度有什么区别？
+
+### 控制精度的三个参数
+
+讨论“不同精度”时，需要先区分精度作用在哪类数据上。vLLM 使用下面三个参数分别配置模型的基础浮点精度、权重量化方法和 KV Cache 精度。它们控制的对象不同，对 KV Cache 的影响也不同。
+
+| 参数 | 控制内容 | 常见参数值 | 对 KV Cache 的影响 |
+|------|----------|------------|--------------------|
+| [`--dtype`](https://docs.vllm.ai/en/latest/configuration/engine_args/#-dtype) | 模型运行时的基础浮点精度。未量化权重和激活使用该 dtype；量化权重格式由 `--quantization` 控制 | `auto`、`float16`、`bfloat16`、`float32` | 仅当 `--kv-cache-dtype=auto` 时，KV Cache 才跟随模型 dtype |
+| [`--quantization`](https://docs.vllm.ai/en/latest/configuration/engine_args/#-quantization) | 权重量化方法 | `awq`、`gptq`、`fp8`、`bitsandbytes` | 不直接改变 KV Cache 精度和单个 token 的 KV Cache 大小；权重显存减少后，可以增加 KV Cache 总容量 |
+| [`--kv-cache-dtype`](https://docs.vllm.ai/en/latest/configuration/engine_args/#-kv-cache-dtype) | KV Cache 精度 | `auto`、`float16`、`bfloat16`、`fp8`、`fp8_e4m3`、`fp8_e5m2` | 直接影响单个 token 的 KV Cache 大小、容量和量化误差 |
+
+未显式设置 `--quantization` 时，vLLM 会读取 checkpoint 中的 `quantization_config`。`--quantization awq` 通常用于加载已经完成 AWQ 量化的 checkpoint，不会在服务启动时执行需要校准数据的 AWQ 量化。
+
+**以 `--quantization awq --dtype float16` 为例：**
+
+- **量化层权重**：AWQ W4A16 通常以 Linear 层为量化目标，将其权重保存为 INT4，并按组保存 scale；非对称量化还会保存 zero point。在常见 Llama 类模型中，这些层包括 Attention 的 `q_proj`、`k_proj`、`v_proj`、`o_proj` 和 MLP 的 `gate_proj`、`up_proj`、`down_proj`。
+
+<Accordion title="量化 scale 和 zero point 是什么？">
+  INT4 只能保存 `0～15` 这样的离散整数。scale 表示相邻两个量化值之间的步长，zero point 表示浮点数 `0` 对应哪个 INT4 数值。量化 kernel 使用下面的公式近似还原浮点权重：
+
+  ```text
+  浮点权重 ≈ (INT4 数值 - zero point) × scale
+  ```
+
+  例如：
+
+  ```text
+  INT4 数值 = 12
+  scale = 0.05
+  zero point = 8
+
+  浮点权重 ≈ (12 - 8) × 0.05 = 0.2
+  ```
+
+  通常是一组权重共享一套 scale 和 zero point，例如每 128 个权重为一组，而不是为每个权重分别保存。对称量化一般不需要单独保存 zero point。
+</Accordion>
+
+- **激活**：W4A16 中的 A16 表示激活使用 16 位浮点格式。在这个示例中，`--dtype float16` 使 Linear 层的输入和输出激活使用 FP16。量化 kernel 在矩阵乘法过程中读取 INT4 权重和 scale，不会把整份权重长期展开成 FP16 保存在显存中。
+- **未量化权重**：未被 AWQ 选中或通过 `ignore` 排除的权重仍使用基础浮点 dtype。在本例中，`--dtype float16` 将这些权重设置为 FP16。
+
+### KV Cache 显存计算
+
+对于结构统一且 Batch 内序列长度相同的 Decoder-only MHA 或 GQA 模型，KV Cache 主体显存可以用下面的公式估算：
+
+```text
+total_bytes
+= batch_size
+  × sequence_length
+  × num_layers
+  × 2
+  × num_key_value_heads
+  × head_dim
+  × precision_bytes
+```
+
+| 参数 | 含义 |
+|------|------|
+| `batch_size` | Batch 中的序列数量 |
+| `sequence_length` | 每个序列缓存的 token 数 |
+| `num_layers` | 模型层数 |
+| `2` | Key 和 Value |
+| `num_key_value_heads` | 每层的 KV Head 数；MHA 通常与 Query Head 数相同，GQA 和 MQA 更少 |
+| `head_dim` | 单个 KV Head 的维度 |
+| `precision_bytes` | 每个 K/V 元素占用的字节数；例如 FP16/BF16 为 2 bytes，FP8 为 1 byte |
+
+可以使用 [Modular LLM Inference Handbook 的 KV Cache 计算说明](https://handbook.modular.com/inference-optimization/kv-cache-offloading/)对照标准公式，也可以通过 [KVCache.AI Calculator](https://kvcache.ai/tools/kv-cache-calculator/)选择具体模型、序列数量和 KV 精度进行估算。
